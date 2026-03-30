@@ -22,6 +22,9 @@ const NARROW_GUTTER = 20
 const NARROW_COL_GAP = 20
 const NARROW_BOTTOM_GAP = 16
 const SEARCH_RESULT_LIMIT = 200
+const UI_AUTO_HIDE_MS = 2000
+const SWIPE_THRESHOLD = 50
+const TAP_MAX_MOVEMENT = 10
 
 type Interval = { left: number; right: number }
 type PositionedLine = { x: number; y: number; width: number; text: string }
@@ -125,6 +128,7 @@ if (books.length === 0) {
 }
 
 const stageElement = document.getElementById('stage')
+const topbarElement = document.querySelector('.topbar')
 const tocOverlayElement = document.getElementById('toc-overlay')
 const tocListElement = document.getElementById('toc-list')
 const tocToggleElement = document.getElementById('toc-toggle')
@@ -132,6 +136,7 @@ const tocCloseElement = document.getElementById('toc-close')
 const tocResumeElement = document.getElementById('toc-resume')
 const pageNumElement = document.getElementById('page-num')
 const bookMetaElement = document.getElementById('book-meta')
+const pageJumpElement = document.getElementById('page-jump')
 const pageSeekElement = document.getElementById('page-seek')
 const pageJumpLabelElement = document.getElementById('page-jump-label')
 const searchToggleElement = document.getElementById('search-toggle')
@@ -145,6 +150,7 @@ const searchStatusElement = document.getElementById('search-status')
 
 if (
   !stageElement ||
+  !topbarElement ||
   !tocOverlayElement ||
   !tocListElement ||
   !tocToggleElement ||
@@ -152,6 +158,7 @@ if (
   !tocResumeElement ||
   !pageNumElement ||
   !bookMetaElement ||
+  !pageJumpElement ||
   !pageSeekElement ||
   !pageJumpLabelElement ||
   !searchToggleElement ||
@@ -167,6 +174,7 @@ if (
 }
 
 const stage = stageElement
+const topbar = topbarElement
 const tocOverlay = tocOverlayElement
 const tocList = tocListElement
 const tocToggle = tocToggleElement
@@ -174,6 +182,7 @@ const tocClose = tocCloseElement
 const tocResume = tocResumeElement
 const pageNum = pageNumElement
 const bookMeta = bookMetaElement
+const pageJump = pageJumpElement
 const pageSeek = pageSeekElement as HTMLInputElement
 const pageJumpLabel = pageJumpLabelElement
 const searchToggle = searchToggleElement as HTMLButtonElement
@@ -202,12 +211,15 @@ let returnPoint: { bookIndex: number; page: number } | null = null
 let searchState: SearchState | null = null
 
 let touchStartX = 0
+let touchStartY = 0
 let isSwipeTracking = false
 let isPinching = false
 let pinchStartDistance = 0
 let pinchStartFontSize = bodyFontSize
 let pendingPinchFontSize = bodyFontSize
 let pinchAnchor: LayoutCursor | null = null
+let chromeHideTimer: number | null = null
+let suppressClickUntil = 0
 
 const layerPools = new Map<HTMLElement, LayerPool>()
 
@@ -234,6 +246,49 @@ function syncPool<T extends HTMLElement>(layer: HTMLElement, pool: T[], count: n
 function clearLayer(layer: HTMLElement): void {
   layer.replaceChildren()
   layerPools.set(layer, { lines: [], headlines: [], dropCap: null })
+}
+
+function setChromeVisible(visible: boolean): void {
+  topbar.classList.toggle('chrome-hidden', !visible)
+  pageJump.classList.toggle('chrome-hidden', !visible)
+}
+
+function clearChromeHideTimer(): void {
+  if (chromeHideTimer !== null) {
+    window.clearTimeout(chromeHideTimer)
+    chromeHideTimer = null
+  }
+}
+
+function scheduleChromeHide(): void {
+  clearChromeHideTimer()
+  chromeHideTimer = window.setTimeout(() => {
+    if (tocOverlay.classList.contains('toc-open') || searchPanel.classList.contains('search-open')) {
+      scheduleChromeHide()
+      return
+    }
+
+    setChromeVisible(false)
+    chromeHideTimer = null
+  }, UI_AUTO_HIDE_MS)
+}
+
+function showChromeTemporarily(): void {
+  setChromeVisible(true)
+  scheduleChromeHide()
+}
+
+function hideChromeImmediately(): void {
+  clearChromeHideTimer()
+  if (tocOverlay.classList.contains('toc-open') || searchPanel.classList.contains('search-open')) {
+    return
+  }
+
+  setChromeVisible(false)
+}
+
+function isChromeVisible(): boolean {
+  return !topbar.classList.contains('chrome-hidden')
 }
 
 function syncLayerStack(): void {
@@ -857,14 +912,21 @@ function openToc(): void {
     return
   }
 
-  closeSearch()
+  setChromeVisible(true)
+  clearChromeHideTimer()
+  searchPanel.classList.remove('search-open')
   returnPoint = { bookIndex: activeBookIndex, page: currentPage }
   renderToc()
   tocOverlay.classList.add('toc-open')
 }
 
 function closeToc(): void {
+  if (!tocOverlay.classList.contains('toc-open')) {
+    return
+  }
+
   tocOverlay.classList.remove('toc-open')
+  showChromeTemporarily()
 }
 
 function resumeFromToc(): void {
@@ -1007,6 +1069,8 @@ function resetSearch(clearInput = false): void {
 }
 
 function openSearch(): void {
+  setChromeVisible(true)
+  clearChromeHideTimer()
   if (!searchPanel.classList.contains('search-open')) {
     searchPanel.classList.add('search-open')
   }
@@ -1016,7 +1080,12 @@ function openSearch(): void {
 }
 
 function closeSearch(): void {
+  if (!searchPanel.classList.contains('search-open')) {
+    return
+  }
+
   searchPanel.classList.remove('search-open')
+  showChromeTemporarily()
 }
 
 function performSearch(): void {
@@ -1169,6 +1238,10 @@ searchInput.addEventListener('keydown', event => {
 })
 
 window.addEventListener('click', (event: MouseEvent) => {
+  if (Date.now() < suppressClickUntil) {
+    return
+  }
+
   const target = event.target as Element
 
   if (tocOverlay.classList.contains('toc-open')) {
@@ -1190,11 +1263,12 @@ window.addEventListener('click', (event: MouseEvent) => {
     return
   }
 
-  if (event.clientX > window.innerWidth * 0.5) {
-    goNextPage()
-  } else {
-    goPrevPage()
+  if (!isChromeVisible()) {
+    showChromeTemporarily()
+    return
   }
+
+  hideChromeImmediately()
 })
 
 window.addEventListener('keydown', (event: KeyboardEvent) => {
@@ -1268,6 +1342,7 @@ window.addEventListener(
     if (event.touches.length === 1 && !isPinching) {
       isSwipeTracking = true
       touchStartX = event.touches[0]!.clientX
+      touchStartY = event.touches[0]!.clientY
     }
   },
   { passive: true },
@@ -1293,6 +1368,8 @@ window.addEventListener(
 window.addEventListener(
   'touchend',
   (event: TouchEvent) => {
+    suppressClickUntil = Date.now() + 500
+
     if (isPinching) {
       if (event.touches.length < 2) {
         const nextSize = pendingPinchFontSize
@@ -1310,12 +1387,22 @@ window.addEventListener(
     }
 
     const deltaX = event.changedTouches[0]!.clientX - touchStartX
+    const deltaY = event.changedTouches[0]!.clientY - touchStartY
     isSwipeTracking = false
-    if (Math.abs(deltaX) > 50) {
+    if (Math.abs(deltaX) > SWIPE_THRESHOLD) {
       if (deltaX < 0) {
         goNextPage()
       } else {
         goPrevPage()
+      }
+      return
+    }
+
+    if (Math.abs(deltaX) <= TAP_MAX_MOVEMENT && Math.abs(deltaY) <= TAP_MAX_MOVEMENT) {
+      if (isChromeVisible()) {
+        hideChromeImmediately()
+      } else {
+        showChromeTemporarily()
       }
     }
   },
@@ -1350,6 +1437,7 @@ window.addEventListener('resize', () => {
 ensureBookPagination(getCurrentBook())
 renderCurrentBook()
 updateSearchStatus()
+showChromeTemporarily()
 
 async function loadBook(source: BookSource): Promise<Book> {
   const buffer = await fetch(source.assetUrl).then(response => response.arrayBuffer())

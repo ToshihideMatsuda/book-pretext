@@ -149,6 +149,13 @@
       justify-content: space-between;
       gap: 12px;
       pointer-events: none;
+      opacity: 1;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .topbar.chrome-hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-50%) translateY(-10px);
     }
     .topbar-main {
       display: flex;
@@ -343,6 +350,13 @@
       background: rgb(0 0 0 / 0.42);
       border: 1px solid rgb(255 255 255 / 0.1);
       box-shadow: 0 14px 32px rgb(0 0 0 / 0.24);
+      opacity: 1;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .page-jump.chrome-hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-50%) translateY(10px);
     }
     .page-seek {
       flex: 1 1 auto;
@@ -403,7 +417,7 @@
       </button>
     </div>
     <div class="toolbar">
-      <button class="toolbar-button" id="toc-toggle" type="button">目次</button>
+      <button class="toolbar-button" id="toc-toggle" type="button">選ぶ</button>
     </div>
   </div>
   <div class="search-panel" id="search-panel">
@@ -426,7 +440,7 @@
   <div class="toc-overlay" id="toc-overlay">
     <div class="toc-panel">
       <div class="toc-header">
-        <div class="toc-title">目次</div>
+        <div class="toc-title">本</div>
         <div class="toc-actions">
           <button class="toolbar-button" id="toc-resume" type="button">戻る</button>
           <button class="toolbar-button" id="toc-close" type="button">閉じる</button>
