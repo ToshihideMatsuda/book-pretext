@@ -7,8 +7,10 @@ import {
   type PreparedTextWithSegments,
 } from '@chenglou/pretext'
 
-const BODY_FONT = '18px "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "HGS明朝E", serif'
-const BODY_LINE_HEIGHT = 30
+const DEFAULT_BODY_FONT_SIZE = 18
+const MIN_BODY_FONT_SIZE = 12
+const MAX_BODY_FONT_SIZE = 30
+const BODY_LINE_HEIGHT_RATIO = 30 / 18
 const HEADLINE_FONT_FAMILY = '"Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "HGS明朝E", serif'
 const GUTTER = 48
 const COL_GAP = 40
@@ -19,11 +21,27 @@ const NARROW_BREAKPOINT = 760
 const NARROW_GUTTER = 20
 const NARROW_COL_GAP = 20
 const NARROW_BOTTOM_GAP = 16
+const SEARCH_RESULT_LIMIT = 200
 
 type Interval = { left: number; right: number }
 type PositionedLine = { x: number; y: number; width: number; text: string }
+type BodyLine = PositionedLine & { end: LayoutCursor; endOffset: number; start: LayoutCursor; startOffset: number }
 type RectObstacle = { x: number; y: number; w: number; h: number }
-type RenderedPage = { cursor: LayoutCursor; hasBodyContent: boolean }
+type RenderedPage = {
+  bodyFont: string
+  bodyLineHeight: number
+  bodyLines: BodyLine[]
+  contentLeft: number
+  cursor: LayoutCursor
+  dropCapFont: string
+  dropCapSize: number
+  hasBodyContent: boolean
+  headlineFont: string
+  headlineLineHeight: number
+  headlineLines: PositionedLine[]
+  isFirstPage: boolean
+  bodyTop: number
+}
 
 type LayerPool = {
   lines: HTMLSpanElement[]
@@ -44,12 +62,28 @@ type Book = {
   dropCapText: string
   dropCapTotalWidth: number
   fileName: string
+  graphemePrefixOffsets: number[][]
   id: string
   lastPage: number
   pageCursors: LayoutCursor[]
   preparedBody: PreparedTextWithSegments
   preparedDropCap: PreparedTextWithSegments
+  segmentGraphemes: string[][]
+  segmentStartOffsets: number[]
   title: string
+  totalPages: number
+}
+
+type SearchMatch = {
+  offset: number
+  page: number
+}
+
+type SearchState = {
+  activeIndex: number
+  bookId: string
+  matches: SearchMatch[]
+  query: string
 }
 
 const bookModules = import.meta.glob('../books/**/*.txt', {
@@ -59,8 +93,9 @@ const bookModules = import.meta.glob('../books/**/*.txt', {
 }) as Record<string, string>
 
 const collator = new Intl.Collator('ja')
-const DROP_CAP_SIZE = BODY_LINE_HEIGHT * DROP_CAP_LINES - 4
-const DROP_CAP_FONT = `700 ${DROP_CAP_SIZE}px ${HEADLINE_FONT_FAMILY}`
+const graphemeSegmenter = new Intl.Segmenter('ja', { granularity: 'grapheme' })
+
+let bodyFontSize = DEFAULT_BODY_FONT_SIZE
 
 await document.fonts.ready
 
@@ -97,6 +132,16 @@ const tocCloseElement = document.getElementById('toc-close')
 const tocResumeElement = document.getElementById('toc-resume')
 const pageNumElement = document.getElementById('page-num')
 const bookMetaElement = document.getElementById('book-meta')
+const pageSeekElement = document.getElementById('page-seek')
+const pageJumpLabelElement = document.getElementById('page-jump-label')
+const searchToggleElement = document.getElementById('search-toggle')
+const searchPanelElement = document.getElementById('search-panel')
+const searchInputElement = document.getElementById('search-input')
+const searchSubmitElement = document.getElementById('search-submit')
+const searchPrevElement = document.getElementById('search-prev')
+const searchNextElement = document.getElementById('search-next')
+const searchCloseElement = document.getElementById('search-close')
+const searchStatusElement = document.getElementById('search-status')
 
 if (
   !stageElement ||
@@ -106,7 +151,17 @@ if (
   !tocCloseElement ||
   !tocResumeElement ||
   !pageNumElement ||
-  !bookMetaElement
+  !bookMetaElement ||
+  !pageSeekElement ||
+  !pageJumpLabelElement ||
+  !searchToggleElement ||
+  !searchPanelElement ||
+  !searchInputElement ||
+  !searchSubmitElement ||
+  !searchPrevElement ||
+  !searchNextElement ||
+  !searchCloseElement ||
+  !searchStatusElement
 ) {
   throw new Error('Required DOM nodes were not found.')
 }
@@ -119,6 +174,16 @@ const tocClose = tocCloseElement
 const tocResume = tocResumeElement
 const pageNum = pageNumElement
 const bookMeta = bookMetaElement
+const pageSeek = pageSeekElement as HTMLInputElement
+const pageJumpLabel = pageJumpLabelElement
+const searchToggle = searchToggleElement as HTMLButtonElement
+const searchPanel = searchPanelElement
+const searchInput = searchInputElement as HTMLInputElement
+const searchSubmit = searchSubmitElement as HTMLButtonElement
+const searchPrev = searchPrevElement as HTMLButtonElement
+const searchNext = searchNextElement as HTMLButtonElement
+const searchClose = searchCloseElement as HTMLButtonElement
+const searchStatus = searchStatusElement
 
 const layerA = document.createElement('div')
 layerA.className = 'page-layer'
@@ -131,8 +196,18 @@ let frontLayer = layerA
 let backLayer = layerB
 let activeBookIndex = 0
 let currentPage = 0
+let currentPageLayout: RenderedPage | null = null
 let isAnimating = false
 let returnPoint: { bookIndex: number; page: number } | null = null
+let searchState: SearchState | null = null
+
+let touchStartX = 0
+let isSwipeTracking = false
+let isPinching = false
+let pinchStartDistance = 0
+let pinchStartFontSize = bodyFontSize
+let pendingPinchFontSize = bodyFontSize
+let pinchAnchor: LayoutCursor | null = null
 
 const layerPools = new Map<HTMLElement, LayerPool>()
 
@@ -248,6 +323,7 @@ function carveSlots(base: Interval, blocked: Interval[]): Interval[] {
 }
 
 function layoutColumnSimple(
+  book: Book,
   prepared: PreparedTextWithSegments,
   startCursor: LayoutCursor,
   regionX: number,
@@ -256,10 +332,10 @@ function layoutColumnSimple(
   regionH: number,
   lineHeight: number,
   rectObstacles: RectObstacle[],
-): { lines: PositionedLine[]; cursor: LayoutCursor } {
-  let cursor = startCursor
+): { lines: BodyLine[]; cursor: LayoutCursor } {
+  let cursor = cloneCursor(startCursor)
   let lineTop = regionY
-  const lines: PositionedLine[] = []
+  const lines: BodyLine[] = []
   let textExhausted = false
 
   while (lineTop + lineHeight <= regionY + regionH && !textExhausted) {
@@ -287,8 +363,19 @@ function layoutColumnSimple(
         textExhausted = true
         break
       }
-      lines.push({ x: Math.round(slot.left), y: Math.round(lineTop), text: line.text, width: line.width })
-      cursor = line.end
+      const start = cloneCursor(line.start)
+      const end = cloneCursor(line.end)
+      lines.push({
+        x: Math.round(slot.left),
+        y: Math.round(lineTop),
+        text: line.text,
+        width: line.width,
+        start,
+        startOffset: cursorToTextOffset(book, start),
+        end,
+        endOffset: cursorToTextOffset(book, end),
+      })
+      cursor = end
     }
     lineTop += lineHeight
   }
@@ -300,27 +387,65 @@ function isSameCursor(left: LayoutCursor, right: LayoutCursor): boolean {
   return left.segmentIndex === right.segmentIndex && left.graphemeIndex === right.graphemeIndex
 }
 
+function compareCursor(left: LayoutCursor, right: LayoutCursor): number {
+  if (left.segmentIndex !== right.segmentIndex) {
+    return left.segmentIndex - right.segmentIndex
+  }
+  return left.graphemeIndex - right.graphemeIndex
+}
+
+function cloneCursor(cursor: LayoutCursor): LayoutCursor {
+  return { segmentIndex: cursor.segmentIndex, graphemeIndex: cursor.graphemeIndex }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+function quantizeFontSize(value: number): number {
+  return Math.round(clamp(value, MIN_BODY_FONT_SIZE, MAX_BODY_FONT_SIZE) * 2) / 2
+}
+
+function getBodyFont(): string {
+  return `${bodyFontSize}px "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "HGS明朝E", serif`
+}
+
+function getBodyLineHeight(): number {
+  return Math.round(bodyFontSize * BODY_LINE_HEIGHT_RATIO)
+}
+
+function getDropCapSize(lineHeight: number): number {
+  return lineHeight * DROP_CAP_LINES - 4
+}
+
+function getDropCapFont(lineHeight: number): string {
+  return `700 ${getDropCapSize(lineHeight)}px ${HEADLINE_FONT_FAMILY}`
+}
+
 function getCurrentBook(): Book {
   return books[activeBookIndex]!
 }
 
-function renderPageToLayer(
-  layer: HTMLElement,
+function composePageLayout(
   startCursor: LayoutCursor,
   pageIndex: number,
   book: Book,
 ): RenderedPage {
-  const pool = getPool(layer)
   const pageWidth = document.documentElement.clientWidth
   const pageHeight = document.documentElement.clientHeight
   const isNarrow = pageWidth < NARROW_BREAKPOINT
   const gutter = isNarrow ? NARROW_GUTTER : GUTTER
   const colGap = isNarrow ? NARROW_COL_GAP : COL_GAP
   const bottomGap = isNarrow ? NARROW_BOTTOM_GAP : BOTTOM_GAP
+  const bodyFont = getBodyFont()
+  const bodyLineHeight = getBodyLineHeight()
+  const dropCapSize = getDropCapSize(bodyLineHeight)
+  const dropCapFont = getDropCapFont(bodyLineHeight)
+  const scale = bodyFontSize / DEFAULT_BODY_FONT_SIZE
 
   const headlineWidth = Math.min(pageWidth - gutter * 2, 1000)
-  const maxHeadlineHeight = Math.floor(pageHeight * (isNarrow ? 0.2 : 0.24))
-  const maxHeadlineSize = isNarrow ? 38 : 92
+  const maxHeadlineHeight = Math.floor(pageHeight * (isNarrow ? 0.18 : 0.24))
+  const maxHeadlineSize = Math.max(24, Math.round((isNarrow ? 38 : 92) * scale))
   const { fontSize: headlineSize, lines: headlineLines } = fitHeadline(
     book.title,
     headlineWidth,
@@ -336,10 +461,58 @@ function renderPageToLayer(
   const columnCount = pageWidth > 1000 ? 3 : pageWidth > 640 ? 2 : 1
   const columnWidth = Math.floor((Math.min(pageWidth, 1500) - gutter * 2 - colGap * (columnCount - 1)) / columnCount)
   const contentLeft = Math.round((pageWidth - (columnCount * columnWidth + (columnCount - 1) * colGap)) / 2)
-
   const isFirstPage = pageIndex === 0
 
-  if (isFirstPage) {
+  const dropCapRect: RectObstacle | null = isFirstPage
+    ? {
+        x: contentLeft - 2,
+        y: bodyTop - 2,
+        w: book.dropCapTotalWidth,
+        h: DROP_CAP_LINES * bodyLineHeight + 2,
+      }
+    : null
+
+  const allLines: BodyLine[] = []
+  let cursor = cloneCursor(startCursor)
+  for (let columnIndex = 0; columnIndex < columnCount; columnIndex++) {
+    const columnX = contentLeft + columnIndex * (columnWidth + colGap)
+    const rects: RectObstacle[] = columnIndex === 0 && dropCapRect ? [dropCapRect] : []
+    const result = layoutColumnSimple(
+      book,
+      book.preparedBody,
+      cursor,
+      columnX,
+      bodyTop,
+      columnWidth,
+      bodyHeight,
+      bodyLineHeight,
+      rects,
+    )
+    allLines.push(...result.lines)
+    cursor = result.cursor
+  }
+
+  return {
+    bodyFont,
+    bodyLineHeight,
+    bodyLines: allLines,
+    contentLeft,
+    cursor,
+    dropCapFont,
+    dropCapSize,
+    hasBodyContent: allLines.length > 0 && !isSameCursor(cursor, startCursor),
+    headlineFont,
+    headlineLineHeight,
+    headlineLines,
+    isFirstPage,
+    bodyTop,
+  }
+}
+
+function paintPageLayout(layer: HTMLElement, page: RenderedPage, book: Book): void {
+  const pool = getPool(layer)
+
+  if (page.isFirstPage) {
     if (!pool.dropCap) {
       const dropCap = document.createElement('div')
       dropCap.className = 'drop-cap'
@@ -347,74 +520,111 @@ function renderPageToLayer(
       pool.dropCap = dropCap
     }
     pool.dropCap.textContent = book.dropCapText
-    pool.dropCap.style.font = DROP_CAP_FONT
-    pool.dropCap.style.lineHeight = `${DROP_CAP_SIZE}px`
-    pool.dropCap.style.left = `${contentLeft - 2}px`
-    pool.dropCap.style.top = `${bodyTop - 2}px`
+    pool.dropCap.style.font = page.dropCapFont
+    pool.dropCap.style.lineHeight = `${page.dropCapSize}px`
+    pool.dropCap.style.left = `${page.contentLeft - 2}px`
+    pool.dropCap.style.top = `${page.bodyTop - 2}px`
     pool.dropCap.style.display = ''
   } else if (pool.dropCap) {
     pool.dropCap.style.display = 'none'
   }
 
-  const dropCapRect: RectObstacle | null = isFirstPage
-    ? {
-        x: contentLeft - 2,
-        y: bodyTop - 2,
-        w: book.dropCapTotalWidth,
-        h: DROP_CAP_LINES * BODY_LINE_HEIGHT + 2,
-      }
-    : null
-
-  const allLines: PositionedLine[] = []
-  let cursor = startCursor
-  for (let columnIndex = 0; columnIndex < columnCount; columnIndex++) {
-    const columnX = contentLeft + columnIndex * (columnWidth + colGap)
-    const rects: RectObstacle[] = columnIndex === 0 && dropCapRect ? [dropCapRect] : []
-    const result = layoutColumnSimple(
-      book.preparedBody,
-      cursor,
-      columnX,
-      bodyTop,
-      columnWidth,
-      bodyHeight,
-      BODY_LINE_HEIGHT,
-      rects,
-    )
-    allLines.push(...result.lines)
-    cursor = result.cursor
-  }
-
-  syncPool(layer, pool.headlines, headlineLines.length, () => {
+  syncPool(layer, pool.headlines, page.headlineLines.length, () => {
     const el = document.createElement('span')
     el.className = 'headline-line'
     return el
   })
-  for (let i = 0; i < headlineLines.length; i++) {
+  const pageWidth = document.documentElement.clientWidth
+  const isNarrow = pageWidth < NARROW_BREAKPOINT
+  const gutter = isNarrow ? NARROW_GUTTER : GUTTER
+  for (let i = 0; i < page.headlineLines.length; i++) {
     const el = pool.headlines[i]!
-    const line = headlineLines[i]!
+    const line = page.headlineLines[i]!
     el.textContent = line.text
     el.style.left = `${gutter + line.x}px`
     el.style.top = `${gutter + line.y}px`
-    el.style.font = headlineFont
-    el.style.lineHeight = `${headlineLineHeight}px`
+    el.style.font = page.headlineFont
+    el.style.lineHeight = `${page.headlineLineHeight}px`
   }
 
-  syncPool(layer, pool.lines, allLines.length, () => {
+  syncPool(layer, pool.lines, page.bodyLines.length, () => {
     const el = document.createElement('span')
     el.className = 'line'
     return el
   })
-  for (let i = 0; i < allLines.length; i++) {
+  const activeSearchQuery = searchState?.bookId === book.id ? searchState.query : ''
+  const activeSearchOffset = searchState?.bookId === book.id ? searchState.matches[searchState.activeIndex]?.offset ?? -1 : -1
+  for (let i = 0; i < page.bodyLines.length; i++) {
     const el = pool.lines[i]!
-    const line = allLines[i]!
-    el.textContent = line.text
+    const line = page.bodyLines[i]!
+    if (activeSearchQuery) {
+      el.innerHTML = renderHighlightedLine(book, line, activeSearchQuery, activeSearchOffset)
+    } else {
+      el.textContent = line.text
+    }
     el.style.left = `${line.x}px`
     el.style.top = `${line.y}px`
-    el.style.font = BODY_FONT
-    el.style.lineHeight = `${BODY_LINE_HEIGHT}px`
+    el.style.font = page.bodyFont
+    el.style.lineHeight = `${page.bodyLineHeight}px`
+  }
+}
+
+function renderHighlightedLine(book: Book, line: BodyLine, query: string, activeOffset: number): string {
+  const lineStart = line.startOffset
+  const lineEnd = line.endOffset
+  if (!query || lineEnd <= lineStart) {
+    return escapeHtml(line.text)
   }
 
-  return { cursor, hasBodyContent: allLines.length > 0 && !isSameCursor(cursor, startCursor) }
+  const queryLength = query.length
+  let searchFrom = lineStart
+  const ranges: Array<{ active: boolean; end: number; start: number }> = []
+
+  while (searchFrom < lineEnd) {
+    const matchStart = book.bodyText.indexOf(query, searchFrom)
+    if (matchStart === -1 || matchStart >= lineEnd) {
+      break
+    }
+    const matchEnd = matchStart + queryLength
+    ranges.push({
+      active: matchStart === activeOffset,
+      start: Math.max(matchStart, lineStart),
+      end: Math.min(matchEnd, lineEnd),
+    })
+    searchFrom = matchStart + Math.max(queryLength, 1)
+  }
+
+  if (ranges.length === 0) {
+    return escapeHtml(line.text)
+  }
+
+  let html = ''
+  let cursor = 0
+  for (const range of ranges) {
+    const localStart = clamp(range.start - lineStart, 0, line.text.length)
+    const localEnd = clamp(range.end - lineStart, localStart, line.text.length)
+    if (localStart > cursor) {
+      html += escapeHtml(line.text.slice(cursor, localStart))
+    }
+    const className = range.active ? 'search-hit search-hit-active' : 'search-hit'
+    html += `<mark class="${className}">${escapeHtml(line.text.slice(localStart, localEnd))}</mark>`
+    cursor = localEnd
+  }
+  if (cursor < line.text.length) {
+    html += escapeHtml(line.text.slice(cursor))
+  }
+  return html
+}
+
+function renderPageToLayer(
+  layer: HTMLElement,
+  startCursor: LayoutCursor,
+  pageIndex: number,
+  book: Book,
+): RenderedPage {
+  const page = composePageLayout(startCursor, pageIndex, book)
+  paintPageLayout(layer, page, book)
+  return page
 }
 
 function createInitialCursor(book: Book): LayoutCursor {
@@ -430,18 +640,78 @@ function ensureBookInitialized(book: Book): void {
   }
 }
 
+function ensureBookPagination(book: Book): void {
+  ensureBookInitialized(book)
+  if (book.totalPages > 0) {
+    return
+  }
+
+  let pageIndex = 0
+  let cursor = cloneCursor(book.pageCursors[0]!)
+
+  while (true) {
+    const page = composePageLayout(cursor, pageIndex, book)
+    if (!page.hasBodyContent) {
+      book.totalPages = Math.max(pageIndex, 1)
+      break
+    }
+    book.pageCursors[pageIndex + 1] = cloneCursor(page.cursor)
+    cursor = cloneCursor(page.cursor)
+    pageIndex += 1
+  }
+}
+
+function invalidateBookPagination(book: Book): void {
+  book.pageCursors = []
+  book.totalPages = 0
+  book.lastPage = 0
+}
+
+function invalidateAllPaginations(): void {
+  for (const book of books) {
+    invalidateBookPagination(book)
+  }
+}
+
+function refreshBookPreparation(book: Book): void {
+  book.preparedBody = prepareWithSegments(book.bodyText, getBodyFont())
+  book.segmentGraphemes = book.preparedBody.segments.map(segment => toGraphemes(segment))
+  book.graphemePrefixOffsets = book.segmentGraphemes.map(graphemes => buildGraphemePrefixOffsets(graphemes))
+  book.segmentStartOffsets = buildSegmentStartOffsets(book.preparedBody.segments)
+  book.preparedDropCap = prepareWithSegments(book.dropCapText, getDropCapFont(getBodyLineHeight()))
+  let dropCapWidth = 0
+  walkLineRanges(book.preparedDropCap, 9999, line => {
+    dropCapWidth = line.width
+  })
+  book.dropCapTotalWidth = Math.ceil(dropCapWidth) + 10
+  invalidateBookPagination(book)
+}
+
+function refreshAllBooksPreparation(): void {
+  cachedHeadlineKey = ''
+  for (const book of books) {
+    refreshBookPreparation(book)
+  }
+}
+
 function updatePageCounter(): void {
-  pageNum.textContent = String(currentPage + 1)
   const book = getCurrentBook()
-  bookMeta.textContent = `${book.author} / ${book.title}`
+  const total = Math.max(book.totalPages, 1)
+  const label = `${currentPage + 1} / ${total}`
+  pageNum.textContent = label
+  pageSeek.max = String(total)
+  pageSeek.value = String(currentPage + 1)
+  pageSeek.disabled = total <= 1
+  pageJumpLabel.textContent = label
+  bookMeta.textContent = `${book.title} / ${book.author}`
 }
 
 function renderCurrentBook(): void {
   const book = getCurrentBook()
-  ensureBookInitialized(book)
+  ensureBookPagination(book)
+  currentPage = clamp(currentPage, 0, Math.max(book.totalPages - 1, 0))
   const cursor = book.pageCursors[currentPage] ?? book.pageCursors[0]!
-  const currentPageRender = renderPageToLayer(frontLayer, cursor, currentPage, book)
-  book.pageCursors[currentPage + 1] = currentPageRender.cursor
+  currentPageLayout = renderPageToLayer(frontLayer, cursor, currentPage, book)
   book.lastPage = currentPage
   updatePageCounter()
   syncLayerStack()
@@ -456,8 +726,26 @@ function switchBook(bookIndex: number, pageIndex = 0): void {
 
   getCurrentBook().lastPage = currentPage
   activeBookIndex = bookIndex
-  currentPage = pageIndex
-  cachedHeadlineKey = ''
+  ensureBookPagination(getCurrentBook())
+  currentPage = clamp(pageIndex, 0, Math.max(getCurrentBook().totalPages - 1, 0))
+  resetSearch(true)
+  renderCurrentBook()
+}
+
+function goToPage(pageIndex: number): void {
+  if (isAnimating || tocOverlay.classList.contains('toc-open')) {
+    return
+  }
+
+  const book = getCurrentBook()
+  ensureBookPagination(book)
+  const nextPage = clamp(Math.round(pageIndex), 0, Math.max(book.totalPages - 1, 0))
+  if (nextPage === currentPage) {
+    updatePageCounter()
+    return
+  }
+
+  currentPage = nextPage
   renderCurrentBook()
 }
 
@@ -467,18 +755,12 @@ function goNextPage(): void {
   }
 
   const book = getCurrentBook()
-  const nextCursor = book.pageCursors[currentPage + 1]
-  if (!nextCursor) {
+  ensureBookPagination(book)
+  if (currentPage >= book.totalPages - 1) {
     return
   }
 
-  const nextPage = renderPageToLayer(backLayer, nextCursor, currentPage + 1, book)
-  if (!nextPage.hasBodyContent) {
-    clearLayer(backLayer)
-    backLayer.classList.add('page-hidden')
-    return
-  }
-  book.pageCursors[currentPage + 2] = nextPage.cursor
+  renderPageToLayer(backLayer, book.pageCursors[currentPage + 1]!, currentPage + 1, book)
 
   isAnimating = true
   setAnimatingLayerStack()
@@ -500,6 +782,7 @@ function goNextPage(): void {
 
       currentPage += 1
       book.lastPage = currentPage
+      currentPageLayout = composePageLayout(book.pageCursors[currentPage]!, currentPage, book)
       updatePageCounter()
       syncLayerStack()
       clearLayer(backLayer)
@@ -537,6 +820,7 @@ function goPrevPage(): void {
 
       currentPage -= 1
       getCurrentBook().lastPage = currentPage
+      currentPageLayout = composePageLayout(getCurrentBook().pageCursors[currentPage]!, currentPage, getCurrentBook())
       updatePageCounter()
       syncLayerStack()
       clearLayer(backLayer)
@@ -573,6 +857,7 @@ function openToc(): void {
     return
   }
 
+  closeSearch()
   returnPoint = { bookIndex: activeBookIndex, page: currentPage }
   renderToc()
   tocOverlay.classList.add('toc-open')
@@ -592,23 +877,319 @@ function resumeFromToc(): void {
   switchBook(returnPoint.bookIndex, returnPoint.page)
 }
 
-document.getElementById('nav-prev')!.addEventListener('click', () => goPrevPage())
-document.getElementById('nav-next')!.addEventListener('click', () => goNextPage())
+function toGraphemes(text: string): string[] {
+  return Array.from(graphemeSegmenter.segment(text), item => item.segment)
+}
+
+function buildGraphemePrefixOffsets(graphemes: string[]): number[] {
+  const offsets = [0]
+  let current = 0
+  for (const grapheme of graphemes) {
+    current += grapheme.length
+    offsets.push(current)
+  }
+  return offsets
+}
+
+function buildSegmentStartOffsets(segments: string[]): number[] {
+  const offsets = [0]
+  let current = 0
+  for (const segment of segments) {
+    current += segment.length
+    offsets.push(current)
+  }
+  return offsets
+}
+
+function cursorToTextOffset(book: Book, cursor: LayoutCursor): number {
+  const segmentStart = book.segmentStartOffsets[cursor.segmentIndex] ?? book.bodyText.length
+  const graphemeOffsets = book.graphemePrefixOffsets[cursor.segmentIndex]
+  if (!graphemeOffsets) {
+    return segmentStart
+  }
+  return segmentStart + (graphemeOffsets[cursor.graphemeIndex] ?? graphemeOffsets[graphemeOffsets.length - 1] ?? 0)
+}
+
+function cursorForTextOffset(book: Book, offset: number): LayoutCursor {
+  let remaining = clamp(offset, 0, book.bodyText.length)
+
+  for (let segmentIndex = 0; segmentIndex < book.preparedBody.segments.length; segmentIndex++) {
+    const segment = book.preparedBody.segments[segmentIndex]!
+    if (remaining > segment.length) {
+      remaining -= segment.length
+      continue
+    }
+    if (remaining === segment.length) {
+      return { segmentIndex: segmentIndex + 1, graphemeIndex: 0 }
+    }
+
+    const graphemes = book.segmentGraphemes[segmentIndex] ?? []
+    let consumed = 0
+    for (let graphemeIndex = 0; graphemeIndex < graphemes.length; graphemeIndex++) {
+      if (remaining <= consumed) {
+        return { segmentIndex, graphemeIndex }
+      }
+      consumed += graphemes[graphemeIndex]!.length
+      if (remaining < consumed) {
+        return { segmentIndex, graphemeIndex }
+      }
+    }
+    return { segmentIndex: segmentIndex + 1, graphemeIndex: 0 }
+  }
+
+  return cloneCursor(book.pageCursors[book.pageCursors.length - 1] ?? createInitialCursor(book))
+}
+
+function findPageIndexForCursor(book: Book, target: LayoutCursor): number {
+  ensureBookPagination(book)
+  let lo = 0
+  let hi = book.totalPages
+
+  while (lo + 1 < hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (compareCursor(book.pageCursors[mid]!, target) <= 0) {
+      lo = mid
+    } else {
+      hi = mid
+    }
+  }
+
+  return clamp(lo, 0, Math.max(book.totalPages - 1, 0))
+}
+
+function buildSearchMatches(book: Book, query: string): SearchMatch[] {
+  const matches: SearchMatch[] = []
+  if (!query) {
+    return matches
+  }
+
+  ensureBookPagination(book)
+  let fromIndex = 0
+
+  while (matches.length < SEARCH_RESULT_LIMIT) {
+    const index = book.bodyText.indexOf(query, fromIndex)
+    if (index === -1) {
+      break
+    }
+
+    matches.push({
+      offset: index,
+      page: findPageIndexForCursor(book, cursorForTextOffset(book, index)),
+    })
+    fromIndex = index + Math.max(query.length, 1)
+  }
+
+  return matches
+}
+
+function updateSearchStatus(message = ''): void {
+  if (message) {
+    searchStatus.textContent = message
+  } else if (!searchState || searchState.bookId !== getCurrentBook().id || searchState.query !== searchInput.value.trim()) {
+    searchStatus.textContent = searchInput.value.trim() ? 'Enter で検索できます' : ''
+  } else if (searchState.matches.length === 0) {
+    searchStatus.textContent = '該当箇所はありません'
+  } else {
+    searchStatus.textContent = `${searchState.activeIndex + 1} / ${searchState.matches.length} 件`
+  }
+
+  const hasMatches = !!searchState && searchState.bookId === getCurrentBook().id && searchState.matches.length > 0
+  searchPrev.disabled = !hasMatches
+  searchNext.disabled = !hasMatches
+}
+
+function resetSearch(clearInput = false): void {
+  searchState = null
+  if (clearInput) {
+    searchInput.value = ''
+  }
+  updateSearchStatus()
+}
+
+function openSearch(): void {
+  if (!searchPanel.classList.contains('search-open')) {
+    searchPanel.classList.add('search-open')
+  }
+  searchInput.focus()
+  searchInput.select()
+  updateSearchStatus()
+}
+
+function closeSearch(): void {
+  searchPanel.classList.remove('search-open')
+}
+
+function performSearch(): void {
+  const query = searchInput.value.trim()
+  if (!query) {
+    resetSearch()
+    updateSearchStatus('検索語を入力してください')
+    return
+  }
+
+  const book = getCurrentBook()
+  const matches = buildSearchMatches(book, query)
+  searchState = {
+    activeIndex: 0,
+    bookId: book.id,
+    matches,
+    query,
+  }
+
+  if (matches.length === 0) {
+    updateSearchStatus('該当箇所はありません')
+    return
+  }
+
+  applySearchMatch(0)
+}
+
+function applySearchMatch(index: number): void {
+  if (!searchState || searchState.bookId !== getCurrentBook().id || searchState.matches.length === 0) {
+    updateSearchStatus()
+    return
+  }
+
+  const nextIndex = (index + searchState.matches.length) % searchState.matches.length
+  searchState.activeIndex = nextIndex
+  goToPage(searchState.matches[nextIndex]!.page)
+  updateSearchStatus()
+}
+
+function refreshSearchMatches(): void {
+  if (!searchState || searchState.bookId !== getCurrentBook().id || !searchState.query) {
+    updateSearchStatus()
+    return
+  }
+
+  const matches = buildSearchMatches(getCurrentBook(), searchState.query)
+  searchState = {
+    ...searchState,
+    matches,
+    activeIndex: clamp(searchState.activeIndex, 0, Math.max(matches.length - 1, 0)),
+  }
+  updateSearchStatus()
+}
+
+function captureAnchorCursor(clientY: number): LayoutCursor | null {
+  if (!currentPageLayout || currentPageLayout.bodyLines.length === 0) {
+    const currentBook = getCurrentBook()
+    ensureBookInitialized(currentBook)
+    return cloneCursor(currentBook.pageCursors[currentPage] ?? currentBook.pageCursors[0]!)
+  }
+
+  let bestLine = currentPageLayout.bodyLines[0]!
+  let bestDistance = Math.abs(clientY - (bestLine.y + currentPageLayout.bodyLineHeight / 2))
+
+  for (const line of currentPageLayout.bodyLines) {
+    const distance = Math.abs(clientY - (line.y + currentPageLayout.bodyLineHeight / 2))
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestLine = line
+    }
+  }
+
+  return cloneCursor(bestLine.start)
+}
+
+function applyBodyFontSize(nextSize: number, anchor: LayoutCursor | null): void {
+  const normalized = quantizeFontSize(nextSize)
+  if (normalized === bodyFontSize) {
+    return
+  }
+
+  bodyFontSize = normalized
+  refreshAllBooksPreparation()
+  ensureBookPagination(getCurrentBook())
+
+  if (anchor) {
+    currentPage = findPageIndexForCursor(getCurrentBook(), anchor)
+  } else {
+    currentPage = clamp(currentPage, 0, Math.max(getCurrentBook().totalPages - 1, 0))
+  }
+
+  renderCurrentBook()
+  refreshSearchMatches()
+}
+
+function handleViewportChange(): void {
+  if (isAnimating) {
+    return
+  }
+
+  const anchor = captureAnchorCursor(window.innerHeight * 0.3)
+  cachedHeadlineKey = ''
+  invalidateAllPaginations()
+  ensureBookPagination(getCurrentBook())
+
+  if (anchor) {
+    currentPage = findPageIndexForCursor(getCurrentBook(), anchor)
+  }
+
+  renderCurrentBook()
+  refreshSearchMatches()
+}
+
+function isTypingIntoField(): boolean {
+  return document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement
+}
+
+function isStageUiTarget(target: Element): boolean {
+  return !!target.closest('.topbar, #page-jump, #search-panel, #toc-overlay')
+}
+
 tocToggle.addEventListener('click', () => openToc())
 tocClose.addEventListener('click', () => closeToc())
 tocResume.addEventListener('click', () => resumeFromToc())
+document.getElementById('nav-prev')!.addEventListener('click', () => goPrevPage())
+document.getElementById('nav-next')!.addEventListener('click', () => goNextPage())
+
+pageSeek.addEventListener('input', event => {
+  const value = Number((event.currentTarget as HTMLInputElement).value)
+  goToPage(value - 1)
+})
+
+searchToggle.addEventListener('click', () => {
+  if (searchPanel.classList.contains('search-open')) {
+    closeSearch()
+  } else {
+    openSearch()
+  }
+})
+searchSubmit.addEventListener('click', () => performSearch())
+searchPrev.addEventListener('click', () => applySearchMatch((searchState?.activeIndex ?? 0) - 1))
+searchNext.addEventListener('click', () => applySearchMatch((searchState?.activeIndex ?? -1) + 1))
+searchClose.addEventListener('click', () => closeSearch())
+searchInput.addEventListener('input', () => updateSearchStatus())
+searchInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    performSearch()
+  }
+})
 
 window.addEventListener('click', (event: MouseEvent) => {
   const target = event.target as Element
+
   if (tocOverlay.classList.contains('toc-open')) {
     if (target === tocOverlay) {
       closeToc()
     }
     return
   }
-  if (target.closest('#nav-prev, #nav-next, #toc-toggle')) {
+
+  if (searchPanel.classList.contains('search-open')) {
+    if (target.closest('#search-panel, #search-toggle')) {
+      return
+    }
+    closeSearch()
     return
   }
+
+  if (target.closest('#nav-prev, #nav-next, #toc-toggle') || isStageUiTarget(target)) {
+    return
+  }
+
   if (event.clientX > window.innerWidth * 0.5) {
     goNextPage()
   } else {
@@ -617,10 +1198,21 @@ window.addEventListener('click', (event: MouseEvent) => {
 })
 
 window.addEventListener('keydown', (event: KeyboardEvent) => {
-  if (event.key === 'Escape' && tocOverlay.classList.contains('toc-open')) {
-    closeToc()
+  if (event.key === 'Escape') {
+    if (tocOverlay.classList.contains('toc-open')) {
+      closeToc()
+      return
+    }
+    if (searchPanel.classList.contains('search-open')) {
+      closeSearch()
+      return
+    }
+  }
+
+  if (isTypingIntoField()) {
     return
   }
+
   if (event.key === 't' || event.key === 'T') {
     event.preventDefault()
     if (tocOverlay.classList.contains('toc-open')) {
@@ -630,9 +1222,17 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
     }
     return
   }
+
+  if (event.key === '/' && !tocOverlay.classList.contains('toc-open')) {
+    event.preventDefault()
+    openSearch()
+    return
+  }
+
   if (tocOverlay.classList.contains('toc-open')) {
     return
   }
+
   if (event.key === 'ArrowRight' || event.key === ' ') {
     event.preventDefault()
     goNextPage()
@@ -643,21 +1243,74 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
   }
 })
 
-let touchStartX = 0
 window.addEventListener(
   'touchstart',
-  (event: TouchEvent) => {
-    touchStartX = event.touches[0]!.clientX
-  },
-  { passive: true },
-)
-window.addEventListener(
-  'touchend',
   (event: TouchEvent) => {
     if (tocOverlay.classList.contains('toc-open')) {
       return
     }
+
+    const target = event.target
+    if (target instanceof Element && isStageUiTarget(target)) {
+      return
+    }
+
+    if (event.touches.length === 2) {
+      isPinching = true
+      isSwipeTracking = false
+      pinchStartDistance = getTouchDistance(event.touches[0]!, event.touches[1]!)
+      pinchStartFontSize = bodyFontSize
+      pendingPinchFontSize = bodyFontSize
+      pinchAnchor = captureAnchorCursor((event.touches[0]!.clientY + event.touches[1]!.clientY) / 2)
+      return
+    }
+
+    if (event.touches.length === 1 && !isPinching) {
+      isSwipeTracking = true
+      touchStartX = event.touches[0]!.clientX
+    }
+  },
+  { passive: true },
+)
+
+window.addEventListener(
+  'touchmove',
+  (event: TouchEvent) => {
+    if (!isPinching || event.touches.length !== 2) {
+      return
+    }
+
+    event.preventDefault()
+    const distance = getTouchDistance(event.touches[0]!, event.touches[1]!)
+    if (pinchStartDistance <= 0) {
+      return
+    }
+    pendingPinchFontSize = quantizeFontSize(pinchStartFontSize * (distance / pinchStartDistance))
+  },
+  { passive: false },
+)
+
+window.addEventListener(
+  'touchend',
+  (event: TouchEvent) => {
+    if (isPinching) {
+      if (event.touches.length < 2) {
+        const nextSize = pendingPinchFontSize
+        const anchor = pinchAnchor
+        isPinching = false
+        pinchStartDistance = 0
+        pinchAnchor = null
+        applyBodyFontSize(nextSize, anchor)
+      }
+      return
+    }
+
+    if (tocOverlay.classList.contains('toc-open') || searchPanel.classList.contains('search-open') || !isSwipeTracking) {
+      return
+    }
+
     const deltaX = event.changedTouches[0]!.clientX - touchStartX
+    isSwipeTracking = false
     if (Math.abs(deltaX) > 50) {
       if (deltaX < 0) {
         goNextPage()
@@ -669,15 +1322,34 @@ window.addEventListener(
   { passive: true },
 )
 
+window.addEventListener(
+  'touchcancel',
+  () => {
+    isPinching = false
+    isSwipeTracking = false
+    pinchStartDistance = 0
+    pinchAnchor = null
+  },
+  { passive: true },
+)
+
+for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(
+    type,
+    event => {
+      event.preventDefault()
+    },
+    { passive: false },
+  )
+}
+
 window.addEventListener('resize', () => {
-  if (isAnimating) {
-    return
-  }
-  cachedHeadlineKey = ''
-  renderCurrentBook()
+  handleViewportChange()
 })
 
+ensureBookPagination(getCurrentBook())
 renderCurrentBook()
+updateSearchStatus()
 
 async function loadBook(source: BookSource): Promise<Book> {
   const buffer = await fetch(source.assetUrl).then(response => response.arrayBuffer())
@@ -705,8 +1377,9 @@ async function loadBook(source: BookSource): Promise<Book> {
 
   const bodyText = textLines.join('\n').replace(/\n{3,}/g, '\n\n').trimStart()
   const dropCapText = bodyText[0] ?? ''
-  const preparedBody = prepareWithSegments(bodyText, BODY_FONT)
-  const preparedDropCap = prepareWithSegments(dropCapText, DROP_CAP_FONT)
+  const preparedBody = prepareWithSegments(bodyText, getBodyFont())
+  const segmentGraphemes = preparedBody.segments.map(segment => toGraphemes(segment))
+  const preparedDropCap = prepareWithSegments(dropCapText, getDropCapFont(getBodyLineHeight()))
   let dropCapWidth = 0
   walkLineRanges(preparedDropCap, 9999, line => {
     dropCapWidth = line.width
@@ -723,13 +1396,19 @@ async function loadBook(source: BookSource): Promise<Book> {
     pageCursors: [],
     preparedBody,
     preparedDropCap,
+    segmentGraphemes,
+    graphemePrefixOffsets: segmentGraphemes.map(graphemes => buildGraphemePrefixOffsets(graphemes)),
+    segmentStartOffsets: buildSegmentStartOffsets(preparedBody.segments),
     title,
+    totalPages: 0,
   }
 }
 
 function cleanLine(line: string): string | null {
   const withoutNotes = line.replace(/［＃.*?］/g, '').trimEnd()
-  const withoutRuby = withoutNotes.replace(/｜([^《\n]+)《[^》\n]+》/g, '$1').replace(/([一-龠々ぁ-んァ-ヴーゝゞヵヶ]+)《[^》\n]+》/g, '$1')
+  const withoutRuby = withoutNotes
+    .replace(/｜([^《\n]+)《[^》\n]+》/g, '$1')
+    .replace(/([一-龠々ぁ-んァ-ヴーゝゞヵヶ]+)《[^》\n]+》/g, '$1')
   const cleaned = withoutRuby.trim()
 
   if (!cleaned) {
@@ -763,4 +1442,8 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;')
+}
+
+function getTouchDistance(left: Touch, right: Touch): number {
+  return Math.hypot(left.clientX - right.clientX, left.clientY - right.clientY)
 }

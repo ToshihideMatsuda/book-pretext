@@ -23,6 +23,7 @@
       width: 100vw;
       height: 100vh;
       overflow: hidden;
+      touch-action: none;
     }
     .page-layer {
       position: absolute;
@@ -41,6 +42,16 @@
       color: #e8e4dc;
       user-select: text;
       -webkit-user-select: text;
+    }
+    .search-hit {
+      background: rgb(255 220 64 / 0.58);
+      color: #201a06;
+      border-radius: 0.18em;
+      box-shadow: 0 0 0 1px rgb(255 220 64 / 0.12);
+    }
+    .search-hit-active {
+      background: rgb(255 177 56 / 0.82);
+      color: #140d00;
     }
     .headline-line {
       position: absolute;
@@ -92,25 +103,29 @@
     .page-counter,
     .book-meta {
       position: fixed;
-      left: 50%;
-      transform: translateX(-50%);
       font: 400 12px/1 "Helvetica Neue", Helvetica, Arial, sans-serif;
       z-index: 100;
-      pointer-events: none;
       white-space: nowrap;
       letter-spacing: 0.08em;
     }
     .page-counter {
       bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
       color: rgb(255 255 255 / 0.3);
+      pointer-events: none;
     }
     .book-meta {
-      bottom: 34px;
-      color: rgb(255 255 255 / 0.24);
+      position: static;
+      min-width: 0;
+      color: rgb(255 255 255 / 0.86);
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .hint {
       position: fixed;
-      top: 14px;
+      top: 70px;
       left: 50%;
       transform: translateX(-50%);
       font: 400 12px/1 "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -122,13 +137,56 @@
       pointer-events: none;
       white-space: nowrap;
     }
-    .toolbar {
+    .topbar {
       position: fixed;
-      top: 14px;
-      right: 14px;
-      z-index: 110;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(960px, calc(100vw - 24px));
+      z-index: 120;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .topbar-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      max-width: calc(100% - 120px);
+      background: rgb(0 0 0 / 0.42);
+      border: 1px solid rgb(255 255 255 / 0.12);
+      border-radius: 999px;
+      padding: 9px 12px;
+      pointer-events: auto;
+      box-shadow: 0 12px 30px rgb(0 0 0 / 0.25);
+    }
+    .icon-button,
+    .search-button {
+      width: 34px;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgb(255 255 255 / 0.12);
+      background: rgb(255 255 255 / 0.04);
+      color: rgb(255 255 255 / 0.82);
+      border-radius: 999px;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .icon-button svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+    }
+    .toolbar {
+      position: static;
       display: flex;
       gap: 8px;
+      pointer-events: auto;
     }
     .toolbar-button {
       border: 1px solid rgb(255 255 255 / 0.15);
@@ -137,6 +195,49 @@
       padding: 7px 12px;
       border-radius: 999px;
       cursor: pointer;
+    }
+    .search-panel {
+      position: fixed;
+      top: 58px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(560px, calc(100vw - 24px));
+      z-index: 130;
+      display: none;
+      background: #111319;
+      border: 1px solid rgb(255 255 255 / 0.08);
+      border-radius: 16px;
+      padding: 12px;
+      box-shadow: 0 20px 50px rgb(0 0 0 / 0.35);
+    }
+    .search-panel.search-open {
+      display: block;
+    }
+    .search-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .search-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      border: 1px solid rgb(255 255 255 / 0.1);
+      background: rgb(255 255 255 / 0.04);
+      color: #fff;
+      border-radius: 999px;
+      padding: 10px 14px;
+      outline: none;
+    }
+    .search-input::placeholder {
+      color: rgb(255 255 255 / 0.4);
+    }
+    .search-status {
+      margin-top: 8px;
+      min-height: 14px;
+      color: rgb(255 255 255 / 0.5);
+      font: 400 12px/1.2 "Helvetica Neue", Helvetica, Arial, sans-serif;
+      letter-spacing: 0.04em;
     }
     .nav-prev, .nav-next {
       position: fixed;
@@ -227,13 +328,59 @@
       border-color: rgb(196 163 90 / 0.45);
       background: rgb(196 163 90 / 0.08);
     }
+    .page-jump {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 40px;
+      width: min(720px, calc(100vw - 32px));
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 115;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgb(0 0 0 / 0.42);
+      border: 1px solid rgb(255 255 255 / 0.1);
+      box-shadow: 0 14px 32px rgb(0 0 0 / 0.24);
+    }
+    .page-seek {
+      flex: 1 1 auto;
+      accent-color: #c4a35a;
+    }
+    .page-jump-label {
+      min-width: 56px;
+      text-align: right;
+      color: rgb(255 255 255 / 0.7);
+      font: 400 12px/1 "Helvetica Neue", Helvetica, Arial, sans-serif;
+      letter-spacing: 0.08em;
+    }
     @media (max-width: 760px) {
       .hint { display: none; }
       .nav-prev, .nav-next { width: 30%; }
-      .book-meta { display: none; }
-      .toolbar {
+      .topbar {
         top: 10px;
-        right: 10px;
+        width: calc(100vw - 16px);
+        gap: 8px;
+      }
+      .topbar-main {
+        max-width: calc(100% - 74px);
+        padding: 8px 10px;
+      }
+      .book-meta {
+        font-size: 12px;
+      }
+      .search-panel {
+        top: 54px;
+        width: calc(100vw - 16px);
+      }
+      .page-jump {
+        width: calc(100vw - 16px);
+        bottom: 34px;
+        padding: 10px 12px;
+      }
+      .page-jump-label {
+        min-width: 48px;
       }
       .toc-item {
         flex-direction: column;
@@ -245,12 +392,36 @@
 <body>
   <div id="stage"></div>
   <div class="hint">← 前のページ &middot; 次のページ →</div>
-  <div class="toolbar">
-    <button class="toolbar-button" id="toc-toggle" type="button">目次</button>
+  <div class="topbar">
+    <div class="topbar-main">
+      <div class="book-meta" id="book-meta"></div>
+      <button class="icon-button" id="search-toggle" type="button" aria-label="検索">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5"></circle>
+          <path d="M16 16L21 21"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="toolbar">
+      <button class="toolbar-button" id="toc-toggle" type="button">目次</button>
+    </div>
+  </div>
+  <div class="search-panel" id="search-panel">
+    <div class="search-row">
+      <input class="search-input" id="search-input" type="search" placeholder="この本を検索">
+      <button class="toolbar-button" id="search-submit" type="button">検索</button>
+      <button class="toolbar-button" id="search-prev" type="button">前</button>
+      <button class="toolbar-button" id="search-next" type="button">次</button>
+      <button class="toolbar-button" id="search-close" type="button">閉じる</button>
+    </div>
+    <div class="search-status" id="search-status"></div>
   </div>
   <div class="nav-prev" id="nav-prev"><span class="nav-arrow">‹</span></div>
   <div class="nav-next" id="nav-next"><span class="nav-arrow">›</span></div>
-  <div class="book-meta" id="book-meta"></div>
+  <div class="page-jump" id="page-jump">
+    <input class="page-seek" id="page-seek" type="range" min="1" max="1" value="1">
+    <div class="page-jump-label" id="page-jump-label">1 / 1</div>
+  </div>
   <div class="page-counter"><span id="page-num">1</span></div>
   <div class="toc-overlay" id="toc-overlay">
     <div class="toc-panel">
