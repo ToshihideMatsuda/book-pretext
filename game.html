@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ピンボール</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    html, body {
+      background: #0a0a0c;
+      color: #e8e4dc;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      font-family: "Courier New", Courier, monospace;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+    }
+    #back {
+      position: fixed;
+      top: 12px;
+      left: 16px;
+      background: none;
+      border: 1px solid #444;
+      color: #888;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    #back:hover { color: #e8e4dc; border-color: #888; }
+  </style>
+</head>
+<body>
+  <button id="back" onclick="location.href='/'">← 本棚</button>
+  <canvas id="canvas"></canvas>
+  <script type="module" src="/src/pinball.ts"></script>
+</body>
+</html>
