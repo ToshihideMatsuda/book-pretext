@@ -1407,8 +1407,12 @@ window.addEventListener(
         if (isSnakeModeActive()) {
           stopSnakeMode()
         } else {
-          const text = currentPageLayout?.bodyLines.map(l => l.text).join('') ?? ''
-          startSnakeMode(stage, text)
+          startSnakeMode(
+            stage,
+            currentPageLayout?.bodyLines ?? [],
+            currentPageLayout?.bodyFont ?? getBodyFont(),
+            currentPageLayout?.bodyLineHeight ?? getBodyLineHeight(),
+          )
         }
         return
       }

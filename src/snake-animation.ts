@@ -1,26 +1,38 @@
 // Snake animation overlay
-// Each sentence from the current page swims like a snake.
-// Head = sentence start, tail = sentence end.
+// Characters peel out from their exact on-screen positions and swim as snakes.
+// Head = sentence start (first character), tail = sentence end.
 // Snakes approach food (🦐) and flee sharks (🦈).
 // Double-tap on stage to toggle.
 
-const SEG_DIST = 14
-const BASE_SPEED = 1.6
+const SEG_DIST = 13
+const BASE_SPEED = 1.5
 const FOOD_ATTRACT_DIST = 220
 const SHARK_REPEL_DIST = 260
 const FOOD_COUNT = 6
 const SHARK_COUNT = 2
-const WANDER = 0.13
-const DOUBLE_TAP_MS = 320
+const WANDER = 0.12
+export const DOUBLE_TAP_MS = 320
+
+export interface PageLine {
+  x: number
+  y: number
+  text: string
+}
 
 interface Pt { x: number; y: number }
 
+interface Seg extends Pt {
+  ox: number  // original x (page position)
+  oy: number  // original y
+}
+
 interface Snake {
-  segs: Pt[]
+  segs: Seg[]
   chars: string[]
   vx: number
   vy: number
-  hue: number  // color variation
+  hue: number
+  warmup: number  // counts down from WARMUP_FRAMES; segments frozen until 0
 }
 
 interface Food {
@@ -34,6 +46,10 @@ interface Shark {
   vx: number
   vy: number
 }
+
+// Stagger snakes so they peel off one at a time
+const WARMUP_FRAMES = 60
+const STAGGER_FRAMES = 18
 
 let canvas: HTMLCanvasElement | null = null
 let raf: number | null = null
@@ -50,12 +66,6 @@ function graphemes(s: string): string[] {
   return [...segmenter.segment(s)].map(g => g.segment)
 }
 
-// Split text into sentences on 。！？… boundaries
-function splitSentences(text: string): string[] {
-  const raw = text.split(/(?<=[。！？…]+)/)
-  return raw.map(s => s.trim()).filter(s => s.length >= 2)
-}
-
 function rand(min: number, max: number): number {
   return min + Math.random() * (max - min)
 }
@@ -66,19 +76,58 @@ function dst(a: Pt, b: Pt): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
-function makeSnake(sentence: string, W: number, H: number): Snake {
-  const chars = graphemes(sentence)
+// Compute per-character pixel positions within each line using measureText
+function charPositionsFromLines(
+  lines: PageLine[],
+  font: string,
+  lineHeight: number,
+): { char: string; x: number; y: number }[][] {
+  const tmpCtx = document.createElement('canvas').getContext('2d')!
+  tmpCtx.font = font
+
+  const sentences: { char: string; x: number; y: number }[][] = []
+  let current: { char: string; x: number; y: number }[] = []
+  const cy_offset = lineHeight * 0.55  // approximate vertical center of glyph
+
+  for (const line of lines) {
+    const chars = graphemes(line.text)
+    let cx = line.x
+
+    for (const char of chars) {
+      current.push({ char, x: cx, y: line.y + cy_offset })
+      cx += tmpCtx.measureText(char).width
+
+      // sentence boundary → start a new snake
+      if (/[。！？…]+/.test(char)) {
+        if (current.length > 1) {
+          sentences.push(current)
+          current = []
+        }
+      }
+    }
+  }
+
+  if (current.length > 1) sentences.push(current)
+  return sentences
+}
+
+function makeSnake(
+  charPos: { char: string; x: number; y: number }[],
+  index: number,
+): Snake {
   const angle = Math.random() * Math.PI * 2
-  const speed = BASE_SPEED * rand(0.7, 1.3)
-  const vx = Math.cos(angle) * speed
-  const vy = Math.sin(angle) * speed
-  const sx = rand(80, W - 80)
-  const sy = rand(80, H - 80)
-  const segs: Pt[] = chars.map((_, i) => ({
-    x: sx - (vx / speed) * i * SEG_DIST,
-    y: sy - (vy / speed) * i * SEG_DIST,
-  }))
-  return { segs, chars, vx, vy, hue: Math.random() * 360 }
+  const speed = BASE_SPEED * rand(0.75, 1.25)
+
+  const segs: Seg[] = charPos.map(c => ({ x: c.x, y: c.y, ox: c.x, oy: c.y }))
+
+  return {
+    segs,
+    chars: charPos.map(c => c.char),
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    hue: Math.random() * 360,
+    warmup: WARMUP_FRAMES + index * STAGGER_FRAMES,
+  }
 }
 
 function makeFood(W: number, H: number): Food {
@@ -96,6 +145,11 @@ function makeShark(W: number, H: number): Shark {
 }
 
 function stepSnake(sn: Snake, W: number, H: number): void {
+  if (sn.warmup > 0) {
+    sn.warmup--
+    return  // still frozen at original positions
+  }
+
   const head = sn.segs[0]!
   let ax = 0
   let ay = 0
@@ -130,7 +184,7 @@ function stepSnake(sn: Snake, W: number, H: number): void {
     }
   }
 
-  // gentle wander
+  // wander
   ax += (Math.random() - 0.5) * WANDER
   ay += (Math.random() - 0.5) * WANDER
 
@@ -155,7 +209,7 @@ function stepSnake(sn: Snake, W: number, H: number): void {
   head.x += sn.vx
   head.y += sn.vy
 
-  // drag body segments
+  // drag body: each segment follows the previous at SEG_DIST
   for (let i = 1; i < sn.segs.length; i++) {
     const prev = sn.segs[i - 1]!
     const curr = sn.segs[i]!
@@ -199,12 +253,10 @@ function drawFrame(ctx: CanvasRenderingContext2D): void {
   }
 
   // sharks
-  ctx.font = '24px serif'
   for (const s of sharks) {
     ctx.globalAlpha = 1
-    // flip horizontally based on direction
-    const flip = s.vx < 0
-    if (flip) {
+    ctx.font = '24px serif'
+    if (s.vx < 0) {
       ctx.save()
       ctx.scale(-1, 1)
       ctx.fillText('🦈', -s.pos.x - 12, s.pos.y + 12)
@@ -214,46 +266,54 @@ function drawFrame(ctx: CanvasRenderingContext2D): void {
     }
   }
 
-  // snakes (draw tail → head so head is on top)
+  // snakes: draw tail → head so head renders on top
   ctx.textBaseline = 'middle'
   for (const sn of snakes) {
     const n = sn.segs.length
-    const isMovingRight = sn.vx >= 0
+    const frozen = sn.warmup > 0
+    const movingRight = sn.vx >= 0
 
     for (let i = n - 1; i >= 0; i--) {
       const seg = sn.segs[i]!
       const char = sn.chars[i] ?? ''
       const t = i / Math.max(n - 1, 1)  // 0 = head, 1 = tail
-      const alpha = 0.35 + (1 - t) * 0.65
+      const alpha = frozen ? 1 : 0.35 + (1 - t) * 0.65
 
       ctx.globalAlpha = alpha
 
-      if (i === 0) {
-        // head: warm gold, slightly larger
+      if (i === 0 && !frozen) {
         ctx.font = 'bold 17px serif'
         ctx.fillStyle = '#ffd45e'
+      } else if (frozen) {
+        // show in original text color while waiting to peel off
+        ctx.font = '16px serif'
+        ctx.fillStyle = '#e8e4dc'
       } else {
-        // body: hue-shifted color, fades toward tail
         const lightness = 70 + t * 10
         ctx.font = '15px serif'
         ctx.fillStyle = `hsl(${sn.hue}, 70%, ${lightness}%)`
       }
 
-      // slight lateral undulation perpendicular to motion
-      const angle = Math.atan2(sn.vy, sn.vx)
-      const wave = Math.sin(i * 0.45 + Date.now() * 0.004) * 2.5
-      const nx = -Math.sin(angle) * wave
-      const ny = Math.cos(angle) * wave
+      // sinusoidal lateral wiggle once swimming
+      let dx = 0, dy = 0
+      if (!frozen) {
+        const angle = Math.atan2(sn.vy, sn.vx)
+        const wave = Math.sin(i * 0.45 + Date.now() * 0.004) * 2.5
+        dx = -Math.sin(angle) * wave
+        dy = Math.cos(angle) * wave
+      }
 
-      // mirror characters when swimming left
-      if (!isMovingRight) {
+      const rx = seg.x + dx
+      const ry = seg.y + dy
+
+      if (!frozen && !movingRight) {
         ctx.save()
-        ctx.translate(seg.x + nx, seg.y + ny)
+        ctx.translate(rx, ry)
         ctx.scale(-1, 1)
         ctx.fillText(char, 0, 0)
         ctx.restore()
       } else {
-        ctx.fillText(char, seg.x + nx - 7, seg.y + ny)
+        ctx.fillText(char, rx - 7, ry)
       }
     }
   }
@@ -286,7 +346,12 @@ function tick(): void {
   raf = requestAnimationFrame(tick)
 }
 
-export function startSnakeMode(stage: HTMLElement, pageText: string): void {
+export function startSnakeMode(
+  stage: HTMLElement,
+  lines: PageLine[],
+  font: string,
+  lineHeight: number,
+): void {
   stopSnakeMode()
 
   canvas = document.createElement('canvas')
@@ -297,8 +362,8 @@ export function startSnakeMode(stage: HTMLElement, pageText: string): void {
   canvas.height = H
   stage.appendChild(canvas)
 
-  const sentences = splitSentences(pageText)
-  snakes = sentences.slice(0, 20).map(s => makeSnake(s, W, H))
+  const sentenceChars = charPositionsFromLines(lines, font, lineHeight)
+  snakes = sentenceChars.slice(0, 20).map((chars, i) => makeSnake(chars, i))
   foods = Array.from({ length: FOOD_COUNT }, () => makeFood(W, H))
   sharks = Array.from({ length: SHARK_COUNT }, () => makeShark(W, H))
 
@@ -318,8 +383,6 @@ export function isSnakeModeActive(): boolean {
   return canvas !== null
 }
 
-// Double-tap detection helper
-// Returns true if this tap qualifies as a double-tap
 export function recordTap(x: number, y: number): boolean {
   const now = Date.now()
   const dt = now - lastTapTime
