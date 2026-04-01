@@ -7,7 +7,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { overflow: hidden; background: #000; }
-  canvas { display: block; }
+  canvas { display: block; touch-action: none; }
   #toggle {
     position: fixed;
     bottom: 28px;
@@ -43,7 +43,9 @@ const toggleBtn = document.getElementById('toggle');
 
 const FONT_SIZE = 22;
 const FONT = `bold ${FONT_SIZE}px sans-serif`;
+const POINTER_FONT = `bold 52px sans-serif`;
 const LINE_HEIGHT = FONT_SIZE * 1.4;
+const HERO_CHARS = new Set(['さ', 'か', 'な']);
 
 const CHARS = [
   'あ','い','う','え','お',
@@ -58,7 +60,6 @@ const CHARS = [
   'わ','を','ん',
 ];
 const N = 46;
-const HERO_ID = 0;
 
 let W, H;
 function resize() {
@@ -92,18 +93,77 @@ const nodes = Array.from({ length: N }, (_, i) => {
   };
 });
 
-// --- タッチ操作状態 ---
-let pointer = null; // { x, y } | null — タップで設定、次のタップで更新
-let mode = 'follow'; // 'follow' | 'flee'
+// --- 50音グリッドレイアウト (右→左: あ行=col9, わ行=col0) ---
+const GOJUUON_LAYOUT = [
+  {char:'あ',col:9,row:0},{char:'い',col:9,row:1},{char:'う',col:9,row:2},{char:'え',col:9,row:3},{char:'お',col:9,row:4},
+  {char:'か',col:8,row:0},{char:'き',col:8,row:1},{char:'く',col:8,row:2},{char:'け',col:8,row:3},{char:'こ',col:8,row:4},
+  {char:'さ',col:7,row:0},{char:'し',col:7,row:1},{char:'す',col:7,row:2},{char:'せ',col:7,row:3},{char:'そ',col:7,row:4},
+  {char:'た',col:6,row:0},{char:'ち',col:6,row:1},{char:'つ',col:6,row:2},{char:'て',col:6,row:3},{char:'と',col:6,row:4},
+  {char:'な',col:5,row:0},{char:'に',col:5,row:1},{char:'ぬ',col:5,row:2},{char:'ね',col:5,row:3},{char:'の',col:5,row:4},
+  {char:'は',col:4,row:0},{char:'ひ',col:4,row:1},{char:'ふ',col:4,row:2},{char:'へ',col:4,row:3},{char:'ほ',col:4,row:4},
+  {char:'ま',col:3,row:0},{char:'み',col:3,row:1},{char:'む',col:3,row:2},{char:'め',col:3,row:3},{char:'も',col:3,row:4},
+  {char:'や',col:2,row:0},{char:'ゆ',col:2,row:2},{char:'よ',col:2,row:4},
+  {char:'ら',col:1,row:0},{char:'り',col:1,row:1},{char:'る',col:1,row:2},{char:'れ',col:1,row:3},{char:'ろ',col:1,row:4},
+  {char:'わ',col:0,row:0},{char:'ん',col:0,row:2},{char:'を',col:0,row:4},
+];
+const gojuuonMap = new Map(GOJUUON_LAYOUT.map(e => [e.char, {col: e.col, row: e.row}]));
+
+function getArrangedTarget(char) {
+  const entry = gojuuonMap.get(char);
+  if (!entry) return null;
+  const colSpacing = Math.min(W / 12, 48);
+  const rowSpacing = Math.min(H / 7, 52);
+  return {
+    x: W / 2 + (entry.col - 4.5) * colSpacing,
+    y: H / 2 + (entry.row - 2) * rowSpacing,
+  };
+}
+
+// --- 操作状態 ---
+let pointer = null;
+let pointerFadeTimer = null;
+let mode = 'follow';
+let arranged = false;
+let lastTapTime = 0;
+const DOUBLE_TAP_MS = 300;
 
 canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const now = Date.now();
+  if (now - lastTapTime < DOUBLE_TAP_MS) {
+    // ダブルタップ: 配置モード切替
+    arranged = !arranged;
+    pointer = null;
+    clearTimeout(pointerFadeTimer);
+    pointerFadeTimer = null;
+    if (!arranged) {
+      for (const n of nodes) {
+        n.vx = (Math.random() - 0.5) * 2;
+        n.vy = (Math.random() - 0.5) * 2;
+      }
+    }
+    lastTapTime = 0;
+    return;
+  }
+  lastTapTime = now;
+  if (arranged) return;
+  clearTimeout(pointerFadeTimer);
+  pointerFadeTimer = null;
   pointer = { x: e.clientX, y: e.clientY };
 });
 
 canvas.addEventListener('pointermove', e => {
-  if (e.buttons > 0) {
+  if (e.buttons > 0 && pointer !== null) {
     pointer = { x: e.clientX, y: e.clientY };
   }
+});
+
+canvas.addEventListener('pointerup', () => {
+  clearTimeout(pointerFadeTimer);
+  pointerFadeTimer = setTimeout(() => {
+    pointer = null;
+    pointerFadeTimer = null;
+  }, 1000);
 });
 
 toggleBtn.addEventListener('click', e => {
@@ -113,17 +173,16 @@ toggleBtn.addEventListener('click', e => {
   toggleBtn.classList.toggle('flee', mode === 'flee');
 });
 
-// --- 群れの中心（画面内を回遊、追従モード時はポインタへ向かう） ---
+// --- 群れの中心 ---
 const flock = { x: W / 2, y: H / 2, vx: 0.90, vy: 0.56 };
 
 function updateFlockCenter() {
+  if (arranged) return;
   if (pointer && mode === 'follow') {
-    // フロック中心をポインタに向けて滑らかに移動
     flock.x += (pointer.x - flock.x) * 0.035;
     flock.y += (pointer.y - flock.y) * 0.035;
     return;
   }
-  // 通常の回遊
   flock.x += flock.vx;
   flock.y += flock.vy;
   if (flock.x < 140 || flock.x > W - 140) flock.vx *= -1;
@@ -134,7 +193,7 @@ function updateFlockCenter() {
   if (spd > 1.70) { flock.vx = flock.vx / spd * 1.70; flock.vy = flock.vy / spd * 1.70; }
 }
 
-// --- 逃走モード: ポインタから各魚を反発 ---
+// --- 逃走モード ---
 function applyFlee(alpha) {
   if (!pointer || mode !== 'flee') return;
   const FLEE_R = 260;
@@ -218,6 +277,28 @@ const sim = forceSimulation(nodes)
 
 function boidTick() {
   updateFlockCenter();
+
+  if (arranged) {
+    sim.velocityDecay(0.28);
+    for (const n of nodes) {
+      const tgt = getArrangedTarget(n.char);
+      if (tgt) {
+        n.vx += (tgt.x - n.x) * 0.06;
+        n.vy += (tgt.y - n.y) * 0.06;
+      }
+      const spd = Math.hypot(n.vx, n.vy);
+      if (spd > 8) { n.vx = n.vx / spd * 8; n.vy = n.vy / spd * 8; }
+      // 文字を直立に戻す
+      const upright = -Math.PI / 2;
+      let diff = upright - n.angle;
+      while (diff >  Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      n.angle += diff * 0.1;
+    }
+    return;
+  }
+
+  sim.velocityDecay(0.05);
   const alpha = sim.alpha();
   cohesion(alpha);
   alignment(alpha);
@@ -229,8 +310,8 @@ function boidTick() {
     const spd = Math.hypot(n.vx, n.vy);
     if (spd > MAX_SPD) { n.vx = n.vx / spd * MAX_SPD; n.vy = n.vy / spd * MAX_SPD; }
     if (spd > 0.08) {
-      const target = Math.atan2(n.vy, n.vx);
-      let diff = target - n.angle;
+      const targetAngle = Math.atan2(n.vy, n.vx);
+      let diff = targetAngle - n.angle;
       while (diff >  Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       n.angle += diff * 0.14;
@@ -265,36 +346,32 @@ function drawBackground() {
 
 function drawPointer() {
   if (!pointer) return;
-  const t = Date.now() * 0.004;
-  const isFollow = mode === 'follow';
-  const baseColor = isFollow ? '255,200,80' : '255,90,90';
   ctx.save();
-  for (let i = 0; i < 3; i++) {
-    const r = 6 + i * 14 + Math.sin(t + i * 1.2) * 3;
-    const alpha = 0.55 - i * 0.15;
-    ctx.beginPath();
-    ctx.arc(pointer.x, pointer.y, r, 0, Math.PI * 2);
-    ctx.strokeStyle = `rgba(${baseColor},${alpha})`;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+  ctx.font = POINTER_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (mode === 'follow') {
+    ctx.fillStyle = '#44ee66';
+    ctx.shadowColor = '#00ff88';
+    ctx.shadowBlur = 28;
+    ctx.fillText('餌', pointer.x, pointer.y);
+  } else {
+    ctx.fillStyle = '#1a3a8a';
+    ctx.shadowColor = '#8899ff';
+    ctx.shadowBlur = 28;
+    ctx.fillText('鮫', pointer.x, pointer.y);
   }
-  // 中心点
-  ctx.beginPath();
-  ctx.arc(pointer.x, pointer.y, 3, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(${baseColor},0.9)`;
-  ctx.fill();
   ctx.restore();
 }
 
 function drawFish(n) {
-  const isHero = n.id === HERO_ID;
   ctx.save();
   ctx.translate(n.x, n.y);
   ctx.rotate(n.angle + Math.PI / 2);
   ctx.font = FONT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  if (isHero) {
+  if (HERO_CHARS.has(n.char)) {
     ctx.shadowColor = '#ff6a00';
     ctx.shadowBlur = 16;
     ctx.fillStyle = '#ff7a10';
@@ -307,9 +384,19 @@ function drawFish(n) {
   ctx.restore();
 }
 
-function frame() {
-  sim.tick();
-  boidTick();
+// --- 120fps 固定タイムステップ ---
+const STEP_MS = 1000 / 120;
+let lastTime = 0, accumulator = 0;
+
+function frame(now) {
+  const dt = Math.min(now - lastTime, 50);
+  lastTime = now;
+  accumulator += dt;
+  while (accumulator >= STEP_MS) {
+    sim.tick();
+    boidTick();
+    accumulator -= STEP_MS;
+  }
   drawBackground();
   drawPointer();
   for (const n of nodes) drawFish(n);
@@ -324,7 +411,7 @@ window.addEventListener('resize', () => {
   });
 });
 
-requestAnimationFrame(frame);
+requestAnimationFrame(t => { lastTime = t; requestAnimationFrame(frame); });
 </script>
 </body>
 </html>
