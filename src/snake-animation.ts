@@ -390,8 +390,8 @@ export function stopSnakeMode(): void {
   returnCallback = null
   if (raf !== null) { cancelAnimationFrame(raf); raf = null }
   container?.remove(); container = null
-  toggleBtn = null
-  pointerEl = null
+  toggleBtn?.remove(); toggleBtn = null
+  pointerEl?.remove(); pointerEl = null
 
   if (boundPointerDown) { window.removeEventListener('pointerdown', boundPointerDown); boundPointerDown = null }
   if (boundPointerMove) { window.removeEventListener('pointermove', boundPointerMove); boundPointerMove = null }
