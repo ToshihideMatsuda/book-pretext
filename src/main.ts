@@ -6,7 +6,7 @@ import {
   type LayoutCursor,
   type PreparedTextWithSegments,
 } from '@chenglou/pretext'
-import { startSnakeMode, stopSnakeMode, isSnakeModeActive, recordTap } from './snake-animation'
+import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, recordTap } from './snake-animation'
 
 const DEFAULT_BODY_FONT_SIZE = 18
 const MIN_BODY_FONT_SIZE = 12
@@ -812,6 +812,8 @@ function goNextPage(): void {
     return
   }
 
+  if (isSnakeModeActive()) { stopSnakeMode(); frontLayer.style.visibility = '' }
+
   const book = getCurrentBook()
   ensureBookPagination(book)
   if (currentPage >= book.totalPages - 1) {
@@ -856,6 +858,8 @@ function goPrevPage(): void {
   if (isAnimating || currentPage === 0 || tocOverlay.classList.contains('toc-open')) {
     return
   }
+
+  if (isSnakeModeActive()) { stopSnakeMode(); frontLayer.style.visibility = '' }
 
   isAnimating = true
   renderPageToLayer(backLayer, getCurrentBook().pageCursors[currentPage - 1]!, currentPage - 1, getCurrentBook())
@@ -1406,8 +1410,10 @@ window.addEventListener(
       const tapY = event.changedTouches[0]!.clientY
       if (recordTap(tapX, tapY)) {
         if (isSnakeModeActive()) {
-          stopSnakeMode()
-          frontLayer.style.visibility = ''
+          triggerReturn(() => {
+            stopSnakeMode()
+            frontLayer.style.visibility = ''
+          })
         } else {
           startSnakeMode(
             stage,

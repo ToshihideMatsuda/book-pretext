@@ -33,7 +33,8 @@ interface Snake {
   vx: number
   vy: number
   warmup: number
-  swimming: boolean  // flipped true when warmup first ends
+  swimming: boolean   // flipped true when warmup first ends
+  returning: boolean  // returning to original positions
 }
 
 let container: HTMLDivElement | null = null
@@ -41,6 +42,7 @@ let toggleBtn: HTMLButtonElement | null = null
 let pointerEl: HTMLDivElement | null = null
 let raf: number | null = null
 let snakes: Snake[] = []
+let returnCallback: (() => void) | null = null
 
 let pointer: Pt | null = null
 let pointerMode: 'food' | 'shark' = 'food'
@@ -128,6 +130,7 @@ function makeSnake(
     vy: Math.sin(angle) * speed,
     warmup: WARMUP_FRAMES + index * STAGGER_FRAMES,
     swimming: false,
+    returning: false,
   }
 }
 
@@ -213,15 +216,16 @@ function updateDOM(now: number): void {
         continue
       }
 
-      // Lateral sinusoidal wiggle perpendicular to velocity
-      const wave = Math.sin(i * 0.45 + now * 0.004) * 2.5
+      // Lateral sinusoidal wiggle (suppressed while returning)
+      const wave = sn.returning ? 0 : Math.sin(i * 0.45 + now * 0.004) * 2.5
       const wx = -Math.sin(angle) * wave
       const wy = Math.cos(angle) * wave
 
       const tx = seg.x - seg.ox + wx
       const ty = seg.y - seg.oy + wy
       seg.el.style.transform = `translate(${tx}px, ${ty}px)`
-      seg.el.style.opacity = String(0.38 + (1 - t) * 0.62)
+      // fade back to full opacity while returning
+      seg.el.style.opacity = sn.returning ? '1' : String(0.38 + (1 - t) * 0.62)
     }
   }
 
@@ -241,12 +245,39 @@ function updateDOM(now: number): void {
   }
 }
 
+// Returns true when all segments have reached their original positions
+function stepReturn(sn: Snake): boolean {
+  let done = true
+  for (const seg of sn.segs) {
+    seg.x += (seg.ox - seg.x) * 0.14
+    seg.y += (seg.oy - seg.y) * 0.14
+    if (Math.sqrt((seg.x - seg.ox) ** 2 + (seg.y - seg.oy) ** 2) > 1.5) done = false
+  }
+  return done
+}
+
 function tick(now: number): void {
   if (!container) return
   const W = window.innerWidth
   const H = window.innerHeight
-  for (const sn of snakes) stepSnake(sn, W, H)
-  updateDOM(now)
+
+  if (returnCallback) {
+    let allDone = true
+    for (const sn of snakes) {
+      if (!stepReturn(sn)) allDone = false
+    }
+    updateDOM(now)
+    if (allDone) {
+      const cb = returnCallback
+      returnCallback = null
+      cb()
+      return
+    }
+  } else {
+    for (const sn of snakes) stepSnake(sn, W, H)
+    updateDOM(now)
+  }
+
   raf = requestAnimationFrame(tick)
 }
 
@@ -344,7 +375,19 @@ export function startSnakeMode(
   raf = requestAnimationFrame(tick)
 }
 
+export function triggerReturn(onComplete: () => void): void {
+  returnCallback = onComplete
+  for (const sn of snakes) {
+    sn.returning = true
+    sn.warmup = 0  // unfreeze any still-frozen snakes so they can return
+  }
+  // Hide pointer indicator and button immediately
+  if (pointerEl) pointerEl.style.display = 'none'
+  if (toggleBtn) toggleBtn.style.display = 'none'
+}
+
 export function stopSnakeMode(): void {
+  returnCallback = null
   if (raf !== null) { cancelAnimationFrame(raf); raf = null }
   container?.remove(); container = null
   toggleBtn = null
