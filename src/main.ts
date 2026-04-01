@@ -764,6 +764,7 @@ function updatePageCounter(): void {
 
 function renderCurrentBook(): void {
   stopSnakeMode()
+  frontLayer.style.visibility = ''
   const book = getCurrentBook()
   ensureBookPagination(book)
   currentPage = clamp(currentPage, 0, Math.max(book.totalPages - 1, 0))
@@ -1406,6 +1407,7 @@ window.addEventListener(
       if (recordTap(tapX, tapY)) {
         if (isSnakeModeActive()) {
           stopSnakeMode()
+          frontLayer.style.visibility = ''
         } else {
           startSnakeMode(
             stage,
@@ -1413,6 +1415,7 @@ window.addEventListener(
             currentPageLayout?.bodyFont ?? getBodyFont(),
             currentPageLayout?.bodyLineHeight ?? getBodyLineHeight(),
           )
+          frontLayer.style.visibility = 'hidden'
         }
         return
       }
