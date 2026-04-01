@@ -255,10 +255,10 @@ function createToggleButton(parent: HTMLElement): HTMLButtonElement {
   btn.textContent = '🦐 餌モード'
   btn.style.cssText = `
     position: absolute;
-    bottom: 72px;
+    bottom: 90px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(0,30,60,0.75);
+    background: rgba(0,30,60,0.80);
     color: #7ad;
     border: 1px solid rgba(100,200,255,0.35);
     border-radius: 24px;
@@ -267,9 +267,9 @@ function createToggleButton(parent: HTMLElement): HTMLButtonElement {
     cursor: pointer;
     backdrop-filter: blur(6px);
     user-select: none;
-    z-index: 10;
+    z-index: 200;
     touch-action: manipulation;
-    transition: background 0.2s, color 0.2s;
+    transition: color 0.2s, border-color 0.2s;
     pointer-events: auto;
     white-space: nowrap;
   `
@@ -295,7 +295,7 @@ function createPointerEl(parent: HTMLElement): HTMLDivElement {
     color: #fff;
     transform: translate(-50%, -50%);
     pointer-events: none;
-    z-index: 8;
+    z-index: 7;
   `
   parent.appendChild(el)
   return el
@@ -313,8 +313,9 @@ export function startSnakeMode(
   container.style.cssText = 'position:absolute;inset:0;z-index:6;overflow:hidden;pointer-events:none;'
   stage.appendChild(container)
 
-  toggleBtn = createToggleButton(container)
-  pointerEl = createPointerEl(container)
+  // Button and pointer indicator go directly on stage (not inside pointer-events:none container)
+  toggleBtn = createToggleButton(stage)
+  pointerEl = createPointerEl(stage)
 
   const sentenceChars = charPositionsFromLines(lines, font)
   snakes = sentenceChars.slice(0, 20).map((chars, i) =>
