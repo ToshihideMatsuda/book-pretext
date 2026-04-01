@@ -6,6 +6,7 @@ import {
   type LayoutCursor,
   type PreparedTextWithSegments,
 } from '@chenglou/pretext'
+import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, togglePointerMode, recordTap, type LineGroup } from './snake-animation'
 
 const DEFAULT_BODY_FONT_SIZE = 18
 const MIN_BODY_FONT_SIZE = 12
@@ -762,6 +763,8 @@ function updatePageCounter(): void {
 }
 
 function renderCurrentBook(): void {
+  stopSnakeMode()
+  frontLayer.style.visibility = ''
   const book = getCurrentBook()
   ensureBookPagination(book)
   currentPage = clamp(currentPage, 0, Math.max(book.totalPages - 1, 0))
@@ -809,6 +812,8 @@ function goNextPage(): void {
     return
   }
 
+  if (isSnakeModeActive()) { return }
+
   const book = getCurrentBook()
   ensureBookPagination(book)
   if (currentPage >= book.totalPages - 1) {
@@ -853,6 +858,8 @@ function goPrevPage(): void {
   if (isAnimating || currentPage === 0 || tocOverlay.classList.contains('toc-open')) {
     return
   }
+
+  if (isSnakeModeActive()) { return }
 
   isAnimating = true
   renderPageToLayer(backLayer, getCurrentBook().pageCursors[currentPage - 1]!, currentPage - 1, getCurrentBook())
@@ -1399,7 +1406,41 @@ window.addEventListener(
     }
 
     if (Math.abs(deltaX) <= TAP_MAX_MOVEMENT && Math.abs(deltaY) <= TAP_MAX_MOVEMENT) {
-      if (isChromeVisible()) {
+      const tapX = event.changedTouches[0]!.clientX
+      const tapY = event.changedTouches[0]!.clientY
+      if (recordTap(tapX, tapY)) {
+        if (isSnakeModeActive()) {
+          triggerReturn(() => {
+            stopSnakeMode()
+            frontLayer.style.visibility = ''
+          })
+        } else {
+          const isNarrow = document.documentElement.clientWidth < NARROW_BREAKPOINT
+          const gutter = isNarrow ? NARROW_GUTTER : GUTTER
+          const bodyGroup: LineGroup = {
+            lines: currentPageLayout?.bodyLines ?? [],
+            font: currentPageLayout?.bodyFont ?? getBodyFont(),
+            lineHeight: currentPageLayout?.bodyLineHeight ?? getBodyLineHeight(),
+          }
+          const headlineGroup: LineGroup | undefined = currentPageLayout?.headlineLines.length
+            ? {
+                lines: currentPageLayout.headlineLines.map(l => ({
+                  x: gutter + l.x,
+                  y: gutter + l.y,
+                  text: l.text,
+                })),
+                font: currentPageLayout.headlineFont,
+                lineHeight: currentPageLayout.headlineLineHeight,
+              }
+            : undefined
+          startSnakeMode(stage, bodyGroup, headlineGroup)
+          frontLayer.style.visibility = 'hidden'
+        }
+        return
+      }
+      if (isSnakeModeActive()) {
+        togglePointerMode()
+      } else if (isChromeVisible()) {
         hideChromeImmediately()
       } else {
         showChromeTemporarily()
