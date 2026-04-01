@@ -45,8 +45,19 @@ const FONT_SIZE = 22;
 const FONT = `bold ${FONT_SIZE}px sans-serif`;
 const LINE_HEIGHT = FONT_SIZE * 1.4;
 
-const CHARS = ['さ','か','な','う','み','い','わ','し','た','こ','く','も','め','ぬ','ね','は','ほ','ま','や','よ','る','れ','ろ','を','ん'];
-const N = 25;
+const CHARS = [
+  'あ','い','う','え','お',
+  'か','き','く','け','こ',
+  'さ','し','す','せ','そ',
+  'た','ち','つ','て','と',
+  'な','に','ぬ','ね','の',
+  'は','ひ','ふ','へ','ほ',
+  'ま','み','む','め','も',
+  'や','ゆ','よ',
+  'ら','り','る','れ','ろ',
+  'わ','を','ん',
+];
+const N = 46;
 const HERO_ID = 0;
 
 let W, H;
@@ -89,6 +100,12 @@ canvas.addEventListener('pointerdown', e => {
   pointer = { x: e.clientX, y: e.clientY };
 });
 
+canvas.addEventListener('pointermove', e => {
+  if (e.buttons > 0) {
+    pointer = { x: e.clientX, y: e.clientY };
+  }
+});
+
 toggleBtn.addEventListener('click', e => {
   e.stopPropagation();
   mode = mode === 'follow' ? 'flee' : 'follow';
@@ -97,7 +114,7 @@ toggleBtn.addEventListener('click', e => {
 });
 
 // --- 群れの中心（画面内を回遊、追従モード時はポインタへ向かう） ---
-const flock = { x: W / 2, y: H / 2, vx: 0.45, vy: 0.28 };
+const flock = { x: W / 2, y: H / 2, vx: 0.90, vy: 0.56 };
 
 function updateFlockCenter() {
   if (pointer && mode === 'follow') {
@@ -114,7 +131,7 @@ function updateFlockCenter() {
   flock.vx += (Math.random() - 0.5) * 0.06;
   flock.vy += (Math.random() - 0.5) * 0.06;
   const spd = Math.hypot(flock.vx, flock.vy);
-  if (spd > 0.85) { flock.vx = flock.vx / spd * 0.85; flock.vy = flock.vy / spd * 0.85; }
+  if (spd > 1.70) { flock.vx = flock.vx / spd * 1.70; flock.vy = flock.vy / spd * 1.70; }
 }
 
 // --- 逃走モード: ポインタから各魚を反発 ---
@@ -135,7 +152,7 @@ function applyFlee(alpha) {
 
 // --- Boid パラメータ ---
 const NEIGHBOR_R = 90;
-const MAX_SPD = 2.4;
+const MAX_SPD = 4.8;
 
 function cohesion(alpha) {
   for (const n of nodes) {
