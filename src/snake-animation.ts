@@ -1,8 +1,7 @@
-// Snake animation overlay
-// Characters peel out from their exact on-screen positions and swim as snakes.
-// Head = sentence start, tail = sentence end.
-// Button toggles pointer between 餌 (attract) and 鮫 (flee).
-// Sliding finger/mouse attracts or repels snakes.
+// Snake animation — DOM-based (no canvas)
+// Each character gets its own <span> at the exact same position as the
+// original page text, so font rendering is identical before/after activation.
+// Animation is applied via CSS transform so the layout position never changes.
 
 const SEG_DIST = 13
 const BASE_SPEED = 1.5
@@ -21,36 +20,36 @@ export interface PageLine {
 
 interface Pt { x: number; y: number }
 
-interface Seg extends Pt {
-  ox: number
-  oy: number
+interface Seg {
+  x: number   // current simulation x
+  y: number   // current simulation y
+  ox: number  // original CSS left
+  oy: number  // original CSS top
+  el: HTMLSpanElement
 }
 
 interface Snake {
   segs: Seg[]
-  chars: string[]
   vx: number
   vy: number
   warmup: number
+  swimming: boolean  // flipped true when warmup first ends
 }
 
-
-let canvas: HTMLCanvasElement | null = null
+let container: HTMLDivElement | null = null
 let toggleBtn: HTMLButtonElement | null = null
+let pointerEl: HTMLDivElement | null = null
 let raf: number | null = null
 let snakes: Snake[] = []
 
-// Pointer state
 let pointer: Pt | null = null
 let pointerMode: 'food' | 'shark' = 'food'
 let pointerFadeTimer: number | null = null
 
-// Listeners kept for cleanup
 let boundPointerDown: ((e: PointerEvent) => void) | null = null
 let boundPointerMove: ((e: PointerEvent) => void) | null = null
 let boundPointerUp: (() => void) | null = null
 
-// Double-tap detection
 let lastTapTime = 0
 let lastTapX = 0
 let lastTapY = 0
@@ -71,22 +70,21 @@ function dst(a: Pt, b: Pt): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
+// Compute per-character x positions using measureText, y = CSS top of the line
 function charPositionsFromLines(
   lines: PageLine[],
   font: string,
-  lineHeight: number,
 ): { char: string; x: number; y: number }[][] {
   const tmpCtx = document.createElement('canvas').getContext('2d')!
   tmpCtx.font = font
   const sentences: { char: string; x: number; y: number }[][] = []
   let current: { char: string; x: number; y: number }[] = []
-  const cyOff = lineHeight * 0.55
 
   for (const line of lines) {
     const chars = graphemes(line.text)
     let cx = line.x
     for (const char of chars) {
-      current.push({ char, x: cx, y: line.y + cyOff })
+      current.push({ char, x: cx, y: line.y })
       cx += tmpCtx.measureText(char).width
       if (/[。！？…]+/.test(char)) {
         if (current.length > 1) { sentences.push(current); current = [] }
@@ -97,18 +95,41 @@ function charPositionsFromLines(
   return sentences
 }
 
-function makeSnake(charPos: { char: string; x: number; y: number }[], index: number): Snake {
+function makeSnake(
+  charPos: { char: string; x: number; y: number }[],
+  index: number,
+  bodyFont: string,
+  lineHeight: number,
+  parent: HTMLDivElement,
+): Snake {
   const angle = Math.random() * Math.PI * 2
   const speed = BASE_SPEED * rand(0.75, 1.25)
+
+  const segs: Seg[] = charPos.map(cp => {
+    const el = document.createElement('span')
+    el.textContent = cp.char
+    el.style.position = 'absolute'
+    el.style.left = `${cp.x}px`
+    el.style.top = `${cp.y}px`
+    el.style.font = bodyFont
+    el.style.lineHeight = `${lineHeight}px`
+    el.style.color = '#e8e4dc'
+    el.style.whiteSpace = 'pre'
+    el.style.willChange = 'transform, opacity'
+    el.style.pointerEvents = 'none'
+    el.style.userSelect = 'none'
+    parent.appendChild(el)
+    return { x: cp.x, y: cp.y, ox: cp.x, oy: cp.y, el }
+  })
+
   return {
-    segs: charPos.map(c => ({ x: c.x, y: c.y, ox: c.x, oy: c.y })),
-    chars: charPos.map(c => c.char),
+    segs,
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
     warmup: WARMUP_FRAMES + index * STAGGER_FRAMES,
+    swimming: false,
   }
 }
-
 
 function stepSnake(sn: Snake, W: number, H: number): void {
   if (sn.warmup > 0) { sn.warmup--; return }
@@ -117,7 +138,6 @@ function stepSnake(sn: Snake, W: number, H: number): void {
   let ax = 0
   let ay = 0
 
-  // pointer interaction
   if (pointer) {
     const d = dst(head, pointer)
     if (pointerMode === 'food' && d < POINTER_FOOD_DIST && d > 0) {
@@ -131,7 +151,6 @@ function stepSnake(sn: Snake, W: number, H: number): void {
     }
   }
 
-  // wander
   ax += (Math.random() - 0.5) * WANDER
   ay += (Math.random() - 0.5) * WANDER
 
@@ -166,94 +185,72 @@ function stepSnake(sn: Snake, W: number, H: number): void {
   }
 }
 
-
-function drawFrame(ctx: CanvasRenderingContext2D): void {
-  const W = ctx.canvas.width
-  const H = ctx.canvas.height
-  ctx.clearRect(0, 0, W, H)
-
-  // pointer indicator (food or shark)
-  if (pointer) {
-    ctx.save()
-    ctx.font = 'bold 44px serif'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    if (pointerMode === 'food') {
-      ctx.shadowColor = '#00ff88'
-      ctx.shadowBlur = 24
-      ctx.fillText('餌', pointer.x, pointer.y)
-    } else {
-      ctx.shadowColor = '#8899ff'
-      ctx.shadowBlur = 24
-      ctx.fillText('鮫', pointer.x, pointer.y)
-    }
-    ctx.restore()
-  }
-
-  // snakes (tail → head)
-  ctx.textBaseline = 'middle'
+function updateDOM(now: number): void {
   for (const sn of snakes) {
-    const n = sn.segs.length
     const frozen = sn.warmup > 0
-    const movingRight = sn.vx >= 0
+    const n = sn.segs.length
 
-    for (let i = n - 1; i >= 0; i--) {
+    // First frame after warmup: update head style once
+    if (!frozen && !sn.swimming) {
+      sn.swimming = true
+      const headEl = sn.segs[0]?.el
+      if (headEl) {
+        headEl.style.fontWeight = 'bold'
+        headEl.style.color = '#f0ece4'
+      }
+    }
+
+    const angle = frozen ? 0 : Math.atan2(sn.vy, sn.vx)
+
+    for (let i = 0; i < n; i++) {
       const seg = sn.segs[i]!
-      const char = sn.chars[i] ?? ''
       const t = i / Math.max(n - 1, 1)
-      const alpha = frozen ? 1 : 0.38 + (1 - t) * 0.62
 
-      ctx.globalAlpha = alpha
-
-      let dx = 0, dy = 0
-      if (!frozen) {
-        const angle = Math.atan2(sn.vy, sn.vx)
-        const wave = Math.sin(i * 0.45 + Date.now() * 0.004) * 2.5
-        dx = -Math.sin(angle) * wave
-        dy = Math.cos(angle) * wave
+      if (frozen) {
+        // No transform: renders exactly like original page text
+        seg.el.style.transform = ''
+        seg.el.style.opacity = '1'
+        continue
       }
 
-      // text color throughout; head slightly brighter when swimming
-      if (i === 0 && !frozen) {
-        ctx.font = 'bold 17px serif'
-        ctx.fillStyle = '#f5f0e8'
-      } else {
-        ctx.font = '15px serif'
-        ctx.fillStyle = '#e8e4dc'
-      }
+      // Lateral sinusoidal wiggle perpendicular to velocity
+      const wave = Math.sin(i * 0.45 + now * 0.004) * 2.5
+      const wx = -Math.sin(angle) * wave
+      const wy = Math.cos(angle) * wave
 
-      const rx = seg.x + dx
-      const ry = seg.y + dy
-
-      if (!frozen && !movingRight) {
-        ctx.save()
-        ctx.translate(rx, ry)
-        ctx.scale(-1, 1)
-        ctx.fillText(char, 0, 0)
-        ctx.restore()
-      } else {
-        ctx.fillText(char, rx - 7, ry)
-      }
+      const tx = seg.x - seg.ox + wx
+      const ty = seg.y - seg.oy + wy
+      seg.el.style.transform = `translate(${tx}px, ${ty}px)`
+      seg.el.style.opacity = String(0.38 + (1 - t) * 0.62)
     }
   }
 
-  ctx.globalAlpha = 1
-  ctx.textBaseline = 'alphabetic'
+  // Pointer indicator
+  if (pointerEl) {
+    if (pointer) {
+      pointerEl.style.display = ''
+      pointerEl.style.left = `${pointer.x}px`
+      pointerEl.style.top = `${pointer.y}px`
+      pointerEl.textContent = pointerMode === 'food' ? '餌' : '鮫'
+      pointerEl.style.textShadow = pointerMode === 'food'
+        ? '0 0 24px #00ff88'
+        : '0 0 24px #8899ff'
+    } else {
+      pointerEl.style.display = 'none'
+    }
+  }
 }
 
-function tick(): void {
-  if (!canvas) return
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  const W = canvas.width
-  const H = canvas.height
-
+function tick(now: number): void {
+  if (!container) return
+  const W = window.innerWidth
+  const H = window.innerHeight
   for (const sn of snakes) stepSnake(sn, W, H)
-  drawFrame(ctx)
+  updateDOM(now)
   raf = requestAnimationFrame(tick)
 }
 
-function createToggleButton(stage: HTMLElement): HTMLButtonElement {
+function createToggleButton(parent: HTMLElement): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.textContent = '🦐 餌モード'
   btn.style.cssText = `
@@ -285,8 +282,23 @@ function createToggleButton(stage: HTMLElement): HTMLButtonElement {
       ? 'rgba(100,200,255,0.35)'
       : 'rgba(255,120,120,0.4)'
   })
-  stage.appendChild(btn)
+  parent.appendChild(btn)
   return btn
+}
+
+function createPointerEl(parent: HTMLElement): HTMLDivElement {
+  const el = document.createElement('div')
+  el.style.cssText = `
+    position: absolute;
+    display: none;
+    font: bold 44px serif;
+    color: #fff;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 8;
+  `
+  parent.appendChild(el)
+  return el
 }
 
 export function startSnakeMode(
@@ -297,21 +309,19 @@ export function startSnakeMode(
 ): void {
   stopSnakeMode()
 
-  // Canvas overlay (pointer-events: none so page interactions pass through)
-  canvas = document.createElement('canvas')
-  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;'
-  const W = stage.clientWidth || window.innerWidth
-  const H = stage.clientHeight || window.innerHeight
-  canvas.width = W
-  canvas.height = H
-  stage.appendChild(canvas)
+  container = document.createElement('div')
+  container.style.cssText = 'position:absolute;inset:0;z-index:6;overflow:hidden;pointer-events:none;'
+  stage.appendChild(container)
 
-  toggleBtn = createToggleButton(stage)
+  toggleBtn = createToggleButton(container)
+  pointerEl = createPointerEl(container)
 
-  const sentenceChars = charPositionsFromLines(lines, font, lineHeight)
-  snakes = sentenceChars.slice(0, 20).map((chars, i) => makeSnake(chars, i))
+  const sentenceChars = charPositionsFromLines(lines, font)
+  snakes = sentenceChars.slice(0, 20).map((chars, i) =>
+    makeSnake(chars, i, font, lineHeight, container!),
+  )
 
-  // Pointer tracking on window (canvas is pointer-events:none so page nav still works)
+  // Pointer tracking (window-level so canvas/div pointer-events:none is unaffected)
   boundPointerDown = (e: PointerEvent) => {
     if ((e.target as Element)?.closest('button, input, .topbar, #page-jump, #search-panel, #toc-overlay')) return
     clearTimeout(pointerFadeTimer ?? undefined)
@@ -319,16 +329,11 @@ export function startSnakeMode(
     pointer = { x: e.clientX, y: e.clientY }
   }
   boundPointerMove = (e: PointerEvent) => {
-    if (e.buttons > 0 && pointer !== null) {
-      pointer = { x: e.clientX, y: e.clientY }
-    }
+    if (e.buttons > 0 && pointer !== null) pointer = { x: e.clientX, y: e.clientY }
   }
   boundPointerUp = () => {
     clearTimeout(pointerFadeTimer ?? undefined)
-    pointerFadeTimer = window.setTimeout(() => {
-      pointer = null
-      pointerFadeTimer = null
-    }, 1200)
+    pointerFadeTimer = window.setTimeout(() => { pointer = null; pointerFadeTimer = null }, 1200)
   }
 
   window.addEventListener('pointerdown', boundPointerDown)
@@ -340,8 +345,9 @@ export function startSnakeMode(
 
 export function stopSnakeMode(): void {
   if (raf !== null) { cancelAnimationFrame(raf); raf = null }
-  canvas?.remove(); canvas = null
-  toggleBtn?.remove(); toggleBtn = null
+  container?.remove(); container = null
+  toggleBtn = null
+  pointerEl = null
 
   if (boundPointerDown) { window.removeEventListener('pointerdown', boundPointerDown); boundPointerDown = null }
   if (boundPointerMove) { window.removeEventListener('pointermove', boundPointerMove); boundPointerMove = null }
@@ -350,12 +356,11 @@ export function stopSnakeMode(): void {
   pointerFadeTimer = null
   pointer = null
   pointerMode = 'food'
-
   snakes = []
 }
 
 export function isSnakeModeActive(): boolean {
-  return canvas !== null
+  return container !== null
 }
 
 export function recordTap(x: number, y: number): boolean {
