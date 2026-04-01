@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.3"
+    "@chenglou/pretext": "^0.0.3",
+    "d3-force": "^3.0.0"
   },
   "optionalDependencies": {
     "@rollup/rollup-darwin-x64": "4.60.1"
