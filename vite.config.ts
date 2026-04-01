@@ -7,6 +7,7 @@ export default defineConfig({
         main: 'index.html',
         game: 'game.html',
         fish: 'fish.html',
+        fish_nopretext: 'fish_nopretext.html',
       },
     },
   },
