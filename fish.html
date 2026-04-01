@@ -8,16 +8,38 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { overflow: hidden; background: #000; }
   canvas { display: block; }
+  #toggle {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,30,60,0.75);
+    color: #7ad;
+    border: 1px solid rgba(100,200,255,0.35);
+    border-radius: 24px;
+    padding: 10px 28px;
+    font-size: 15px;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    user-select: none;
+    z-index: 10;
+    touch-action: manipulation;
+    transition: background 0.2s;
+  }
+  #toggle:hover { background: rgba(0,50,100,0.85); }
+  #toggle.flee { color: #f88; border-color: rgba(255,120,120,0.4); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="toggle">👆 追従モード</button>
 <script type="module">
 import { prepareWithSegments, layoutWithLines } from '@chenglou/pretext';
 import { forceSimulation, forceCollide } from 'd3-force';
 
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
+const toggleBtn = document.getElementById('toggle');
 
 const FONT_SIZE = 22;
 const FONT = `bold ${FONT_SIZE}px sans-serif`;
@@ -25,7 +47,7 @@ const LINE_HEIGHT = FONT_SIZE * 1.4;
 
 const CHARS = ['さ','か','な','う','み','い','わ','し','た','こ','く','も','め','ぬ','ね','は','ほ','ま','や','よ','る','れ','ろ','を','ん'];
 const N = 25;
-const HERO_ID = 0; // protagonist index
+const HERO_ID = 0;
 
 let W, H;
 function resize() {
@@ -40,7 +62,6 @@ for (const ch of new Set(CHARS)) {
   const prep = prepareWithSegments(ch, FONT);
   const { lines } = layoutWithLines(prep, Infinity, LINE_HEIGHT);
   const w = lines[0]?.width ?? FONT_SIZE;
-  // 衝突半径 = max(文字幅, フォントサイズ) / 2 + 余白
   charMeasures[ch] = { width: w, radius: Math.max(w, FONT_SIZE) / 2 + 4 };
 }
 
@@ -60,10 +81,32 @@ const nodes = Array.from({ length: N }, (_, i) => {
   };
 });
 
-// --- 群れの中心（画面内を回遊） ---
+// --- タッチ操作状態 ---
+let pointer = null; // { x, y } | null — タップで設定、次のタップで更新
+let mode = 'follow'; // 'follow' | 'flee'
+
+canvas.addEventListener('pointerdown', e => {
+  pointer = { x: e.clientX, y: e.clientY };
+});
+
+toggleBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  mode = mode === 'follow' ? 'flee' : 'follow';
+  toggleBtn.textContent = mode === 'follow' ? '👆 追従モード' : '🏃 逃走モード';
+  toggleBtn.classList.toggle('flee', mode === 'flee');
+});
+
+// --- 群れの中心（画面内を回遊、追従モード時はポインタへ向かう） ---
 const flock = { x: W / 2, y: H / 2, vx: 0.45, vy: 0.28 };
 
 function updateFlockCenter() {
+  if (pointer && mode === 'follow') {
+    // フロック中心をポインタに向けて滑らかに移動
+    flock.x += (pointer.x - flock.x) * 0.035;
+    flock.y += (pointer.y - flock.y) * 0.035;
+    return;
+  }
+  // 通常の回遊
   flock.x += flock.vx;
   flock.y += flock.vy;
   if (flock.x < 140 || flock.x > W - 140) flock.vx *= -1;
@@ -74,16 +117,30 @@ function updateFlockCenter() {
   if (spd > 0.85) { flock.vx = flock.vx / spd * 0.85; flock.vy = flock.vy / spd * 0.85; }
 }
 
+// --- 逃走モード: ポインタから各魚を反発 ---
+function applyFlee(alpha) {
+  if (!pointer || mode !== 'flee') return;
+  const FLEE_R = 260;
+  for (const n of nodes) {
+    const dx = n.x - pointer.x;
+    const dy = n.y - pointer.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < FLEE_R && dist > 0) {
+      const str = Math.pow((FLEE_R - dist) / FLEE_R, 1.5) * 0.22 * alpha;
+      n.vx += (dx / dist) * str;
+      n.vy += (dy / dist) * str;
+    }
+  }
+}
+
 // --- Boid パラメータ ---
 const NEIGHBOR_R = 90;
 const MAX_SPD = 2.4;
 
 function cohesion(alpha) {
   for (const n of nodes) {
-    // フロック中心への引力
     n.vx += (flock.x - n.x) * 0.0008 * alpha;
     n.vy += (flock.y - n.y) * 0.0008 * alpha;
-    // 近隣重心への引力
     let cx = 0, cy = 0, cnt = 0;
     for (const m of nodes) {
       if (m === n) continue;
@@ -110,7 +167,6 @@ function alignment(alpha) {
   }
 }
 
-// separation: 衝突半径は pretext の計測値から算出した radius を使用
 function separation(alpha) {
   for (const n of nodes) {
     for (const m of nodes) {
@@ -137,8 +193,6 @@ function boundary() {
   }
 }
 
-// --- d3-force シミュレーション ---
-// forceCollide の半径に pretext 計測値由来の radius を使用
 const sim = forceSimulation(nodes)
   .alphaDecay(0)
   .velocityDecay(0.05)
@@ -151,12 +205,12 @@ function boidTick() {
   cohesion(alpha);
   alignment(alpha);
   separation(alpha);
+  applyFlee(alpha);
   boundary();
 
   for (const n of nodes) {
     const spd = Math.hypot(n.vx, n.vy);
     if (spd > MAX_SPD) { n.vx = n.vx / spd * MAX_SPD; n.vy = n.vy / spd * MAX_SPD; }
-    // 速度方向へ滑らかに回転
     if (spd > 0.08) {
       const target = Math.atan2(n.vy, n.vx);
       let diff = target - n.angle;
@@ -176,7 +230,6 @@ function drawBackground() {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
-  // コースティクス風の揺らぎ
   ctx.save();
   ctx.globalAlpha = 0.025;
   const t = Date.now();
@@ -193,11 +246,33 @@ function drawBackground() {
   ctx.restore();
 }
 
+function drawPointer() {
+  if (!pointer) return;
+  const t = Date.now() * 0.004;
+  const isFollow = mode === 'follow';
+  const baseColor = isFollow ? '255,200,80' : '255,90,90';
+  ctx.save();
+  for (let i = 0; i < 3; i++) {
+    const r = 6 + i * 14 + Math.sin(t + i * 1.2) * 3;
+    const alpha = 0.55 - i * 0.15;
+    ctx.beginPath();
+    ctx.arc(pointer.x, pointer.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${baseColor},${alpha})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  // 中心点
+  ctx.beginPath();
+  ctx.arc(pointer.x, pointer.y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(${baseColor},0.9)`;
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawFish(n) {
   const isHero = n.id === HERO_ID;
   ctx.save();
   ctx.translate(n.x, n.y);
-  // 進行方向を向く（テキストの上方向 = 進行方向）
   ctx.rotate(n.angle + Math.PI / 2);
   ctx.font = FONT;
   ctx.textAlign = 'center';
@@ -211,7 +286,6 @@ function drawFish(n) {
     ctx.shadowBlur = 7;
     ctx.fillStyle = `hsl(190,65%,${62 + Math.sin(n.id * 1.7) * 10}%)`;
   }
-  // pretext で計測した charWidth を使って x オフセット補正（textAlign:'center' 済みなので 0）
   ctx.fillText(n.char, 0, 0);
   ctx.restore();
 }
@@ -220,6 +294,7 @@ function frame() {
   sim.tick();
   boidTick();
   drawBackground();
+  drawPointer();
   for (const n of nodes) drawFish(n);
   requestAnimationFrame(frame);
 }
