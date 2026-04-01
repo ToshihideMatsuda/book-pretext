@@ -3,7 +3,7 @@
 // original page text, so font rendering is identical before/after activation.
 // Animation is applied via CSS transform so the layout position never changes.
 
-const SEG_DIST = 13
+const SEG_DIST_MIN = 13
 const BASE_SPEED = 1.5
 const POINTER_FOOD_DIST = 250
 const POINTER_SHARK_DIST = 280
@@ -16,6 +16,12 @@ export interface PageLine {
   x: number
   y: number
   text: string
+}
+
+export interface LineGroup {
+  lines: PageLine[]
+  font: string
+  lineHeight: number
 }
 
 interface Pt { x: number; y: number }
@@ -32,6 +38,7 @@ interface Snake {
   segs: Seg[]
   vx: number
   vy: number
+  segDist: number     // segment spacing, scaled to font size
   warmup: number
   swimming: boolean   // flipped true when warmup first ends
   returning: boolean  // returning to original positions
@@ -97,15 +104,21 @@ function charPositionsFromLines(
   return sentences
 }
 
+function fontSizeFromFont(font: string): number {
+  const m = font.match(/(\d+(?:\.\d+)?)px/)
+  return m ? parseFloat(m[1]) : 18
+}
+
 function makeSnake(
   charPos: { char: string; x: number; y: number }[],
   index: number,
-  bodyFont: string,
+  font: string,
   lineHeight: number,
   parent: HTMLDivElement,
 ): Snake {
   const angle = Math.random() * Math.PI * 2
   const speed = BASE_SPEED * rand(0.75, 1.25)
+  const segDist = Math.max(SEG_DIST_MIN, fontSizeFromFont(font) * 0.65)
 
   const segs: Seg[] = charPos.map(cp => {
     const el = document.createElement('span')
@@ -113,7 +126,7 @@ function makeSnake(
     el.style.position = 'absolute'
     el.style.left = `${cp.x}px`
     el.style.top = `${cp.y}px`
-    el.style.font = bodyFont
+    el.style.font = font
     el.style.lineHeight = `${lineHeight}px`
     el.style.color = '#e8e4dc'
     el.style.whiteSpace = 'pre'
@@ -128,6 +141,7 @@ function makeSnake(
     segs,
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
+    segDist,
     warmup: WARMUP_FRAMES + index * STAGGER_FRAMES,
     swimming: false,
     returning: false,
@@ -181,9 +195,9 @@ function stepSnake(sn: Snake, W: number, H: number): void {
     const dx = curr.x - prev.x
     const dy = curr.y - prev.y
     const d = Math.sqrt(dx * dx + dy * dy)
-    if (d > SEG_DIST) {
-      curr.x = prev.x + (dx / d) * SEG_DIST
-      curr.y = prev.y + (dy / d) * SEG_DIST
+    if (d > sn.segDist) {
+      curr.x = prev.x + (dx / d) * sn.segDist
+      curr.y = prev.y + (dy / d) * sn.segDist
     }
   }
 }
@@ -334,9 +348,8 @@ function createPointerEl(parent: HTMLElement): HTMLDivElement {
 
 export function startSnakeMode(
   stage: HTMLElement,
-  lines: PageLine[],
-  font: string,
-  lineHeight: number,
+  bodyGroup: LineGroup,
+  headlineGroup?: LineGroup,
 ): void {
   stopSnakeMode()
 
@@ -348,8 +361,17 @@ export function startSnakeMode(
   toggleBtn = createToggleButton(stage)
   pointerEl = createPointerEl(stage)
 
-  const sentenceChars = charPositionsFromLines(lines, font)
-  snakes = sentenceChars.slice(0, 20).map((chars, i) =>
+  // Headline snakes first (so they peel off before body sentences)
+  const headlineSentences = headlineGroup
+    ? charPositionsFromLines(headlineGroup.lines, headlineGroup.font).map(
+        chars => ({ chars, font: headlineGroup.font, lineHeight: headlineGroup.lineHeight }),
+      )
+    : []
+  const bodySentences = charPositionsFromLines(bodyGroup.lines, bodyGroup.font).map(
+    chars => ({ chars, font: bodyGroup.font, lineHeight: bodyGroup.lineHeight }),
+  )
+  const all = [...headlineSentences, ...bodySentences].slice(0, 25)
+  snakes = all.map(({ chars, font, lineHeight }, i) =>
     makeSnake(chars, i, font, lineHeight, container!),
   )
 

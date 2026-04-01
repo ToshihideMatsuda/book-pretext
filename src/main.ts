@@ -6,7 +6,7 @@ import {
   type LayoutCursor,
   type PreparedTextWithSegments,
 } from '@chenglou/pretext'
-import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, recordTap } from './snake-animation'
+import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, recordTap, type LineGroup } from './snake-animation'
 
 const DEFAULT_BODY_FONT_SIZE = 18
 const MIN_BODY_FONT_SIZE = 12
@@ -812,7 +812,7 @@ function goNextPage(): void {
     return
   }
 
-  if (isSnakeModeActive()) { stopSnakeMode(); frontLayer.style.visibility = '' }
+  if (isSnakeModeActive()) { return }
 
   const book = getCurrentBook()
   ensureBookPagination(book)
@@ -859,7 +859,7 @@ function goPrevPage(): void {
     return
   }
 
-  if (isSnakeModeActive()) { stopSnakeMode(); frontLayer.style.visibility = '' }
+  if (isSnakeModeActive()) { return }
 
   isAnimating = true
   renderPageToLayer(backLayer, getCurrentBook().pageCursors[currentPage - 1]!, currentPage - 1, getCurrentBook())
@@ -1415,12 +1415,25 @@ window.addEventListener(
             frontLayer.style.visibility = ''
           })
         } else {
-          startSnakeMode(
-            stage,
-            currentPageLayout?.bodyLines ?? [],
-            currentPageLayout?.bodyFont ?? getBodyFont(),
-            currentPageLayout?.bodyLineHeight ?? getBodyLineHeight(),
-          )
+          const isNarrow = document.documentElement.clientWidth < NARROW_BREAKPOINT
+          const gutter = isNarrow ? NARROW_GUTTER : GUTTER
+          const bodyGroup: LineGroup = {
+            lines: currentPageLayout?.bodyLines ?? [],
+            font: currentPageLayout?.bodyFont ?? getBodyFont(),
+            lineHeight: currentPageLayout?.bodyLineHeight ?? getBodyLineHeight(),
+          }
+          const headlineGroup: LineGroup | undefined = currentPageLayout?.headlineLines.length
+            ? {
+                lines: currentPageLayout.headlineLines.map(l => ({
+                  x: gutter + l.x,
+                  y: gutter + l.y,
+                  text: l.text,
+                })),
+                font: currentPageLayout.headlineFont,
+                lineHeight: currentPageLayout.headlineLineHeight,
+              }
+            : undefined
+          startSnakeMode(stage, bodyGroup, headlineGroup)
           frontLayer.style.visibility = 'hidden'
         }
         return
