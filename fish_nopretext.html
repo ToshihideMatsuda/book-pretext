@@ -34,7 +34,6 @@
 <canvas id="c"></canvas>
 <button id="toggle">👆 追従モード</button>
 <script type="module">
-import { prepareWithSegments, layoutWithLines } from '@chenglou/pretext';
 import { forceSimulation, forceCollide } from 'd3-force';
 
 const canvas = document.getElementById('c');
@@ -44,7 +43,6 @@ const toggleBtn = document.getElementById('toggle');
 const FONT_SIZE = 22;
 const FONT = `bold ${FONT_SIZE}px sans-serif`;
 const POINTER_FONT = `bold 52px sans-serif`;
-const LINE_HEIGHT = FONT_SIZE * 1.4;
 const HERO_CHARS = new Set(['さ', 'か', 'な']);
 
 const CHARS = [
@@ -68,12 +66,11 @@ function resize() {
 }
 resize();
 
-// --- pretext: 各文字の描画幅を事前計測 ---
+// --- ctx.measureText: 各文字の描画幅を事前計測 ---
+ctx.font = FONT;
 const charMeasures = {};
 for (const ch of new Set(CHARS)) {
-  const prep = prepareWithSegments(ch, FONT);
-  const { lines } = layoutWithLines(prep, Infinity, LINE_HEIGHT);
-  const w = lines[0]?.width ?? FONT_SIZE;
+  const w = ctx.measureText(ch).width;
   charMeasures[ch] = { width: w, radius: Math.max(w, FONT_SIZE) / 2 + 4 };
 }
 
