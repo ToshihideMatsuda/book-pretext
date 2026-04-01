@@ -6,7 +6,7 @@ import {
   type LayoutCursor,
   type PreparedTextWithSegments,
 } from '@chenglou/pretext'
-import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, recordTap, type LineGroup } from './snake-animation'
+import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, togglePointerMode, recordTap, type LineGroup } from './snake-animation'
 
 const DEFAULT_BODY_FONT_SIZE = 18
 const MIN_BODY_FONT_SIZE = 12
@@ -1438,7 +1438,9 @@ window.addEventListener(
         }
         return
       }
-      if (isChromeVisible()) {
+      if (isSnakeModeActive()) {
+        togglePointerMode()
+      } else if (isChromeVisible()) {
         hideChromeImmediately()
       } else {
         showChromeTemporarily()

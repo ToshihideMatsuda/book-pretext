@@ -429,6 +429,16 @@ export function isSnakeModeActive(): boolean {
   return container !== null
 }
 
+export function togglePointerMode(): void {
+  pointerMode = pointerMode === 'food' ? 'shark' : 'food'
+  if (!toggleBtn) return
+  toggleBtn.textContent = pointerMode === 'food' ? '🦐 餌モード' : '🦈 鮫モード'
+  toggleBtn.style.color = pointerMode === 'food' ? '#7ad' : '#f88'
+  toggleBtn.style.borderColor = pointerMode === 'food'
+    ? 'rgba(100,200,255,0.35)'
+    : 'rgba(255,120,120,0.4)'
+}
+
 export function recordTap(x: number, y: number): boolean {
   const now = Date.now()
   const dt = now - lastTapTime
