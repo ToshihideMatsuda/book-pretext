@@ -6,11 +6,8 @@
 
 const SEG_DIST = 13
 const BASE_SPEED = 1.5
-const STATIC_FOOD_DIST = 200   // range for static food items
-const SHARK_REPEL_DIST = 260
 const POINTER_FOOD_DIST = 250
 const POINTER_SHARK_DIST = 280
-const STATIC_FOOD_COUNT = 3
 const WANDER = 0.12
 export const DOUBLE_TAP_MS = 320
 const WARMUP_FRAMES = 60
@@ -37,24 +34,11 @@ interface Snake {
   warmup: number
 }
 
-interface StaticFood {
-  pos: Pt
-  active: boolean
-  respawnIn: number
-}
-
-interface Shark {
-  pos: Pt
-  vx: number
-  vy: number
-}
 
 let canvas: HTMLCanvasElement | null = null
 let toggleBtn: HTMLButtonElement | null = null
 let raf: number | null = null
 let snakes: Snake[] = []
-let staticFoods: StaticFood[] = []
-let wanderingShark: Shark | null = null
 
 // Pointer state
 let pointer: Pt | null = null
@@ -125,18 +109,6 @@ function makeSnake(charPos: { char: string; x: number; y: number }[], index: num
   }
 }
 
-function makeStaticFood(W: number, H: number): StaticFood {
-  return { pos: { x: rand(60, W - 60), y: rand(60, H - 60) }, active: true, respawnIn: 0 }
-}
-
-function makeShark(W: number, H: number): Shark {
-  const angle = Math.random() * Math.PI * 2
-  return {
-    pos: { x: rand(80, W - 80), y: rand(80, H - 80) },
-    vx: Math.cos(angle) * BASE_SPEED * 0.55,
-    vy: Math.sin(angle) * BASE_SPEED * 0.55,
-  }
-}
 
 function stepSnake(sn: Snake, W: number, H: number): void {
   if (sn.warmup > 0) { sn.warmup--; return }
@@ -145,7 +117,7 @@ function stepSnake(sn: Snake, W: number, H: number): void {
   let ax = 0
   let ay = 0
 
-  // pointer interaction (strongest effect)
+  // pointer interaction
   if (pointer) {
     const d = dst(head, pointer)
     if (pointerMode === 'food' && d < POINTER_FOOD_DIST && d > 0) {
@@ -156,33 +128,6 @@ function stepSnake(sn: Snake, W: number, H: number): void {
       const w = (1 - d / POINTER_SHARK_DIST) * 0.45
       ax -= ((pointer.x - head.x) / d) * w
       ay -= ((pointer.y - head.y) / d) * w
-    }
-  }
-
-  // static food attraction
-  let minD = Infinity
-  let nearFood: StaticFood | null = null
-  for (const f of staticFoods) {
-    if (!f.active) continue
-    const d = dst(head, f.pos)
-    if (d < minD) { minD = d; nearFood = f }
-  }
-  if (nearFood && minD < STATIC_FOOD_DIST) {
-    const dx = nearFood.pos.x - head.x
-    const dy = nearFood.pos.y - head.y
-    const w = (1 - minD / STATIC_FOOD_DIST) * 0.10
-    ax += (dx / minD) * w
-    ay += (dy / minD) * w
-    if (minD < 18) { nearFood.active = false; nearFood.respawnIn = 200 + Math.floor(Math.random() * 200) }
-  }
-
-  // wandering shark repulsion
-  if (wanderingShark) {
-    const d = dst(head, wanderingShark.pos)
-    if (d < SHARK_REPEL_DIST && d > 0) {
-      const w = (1 - d / SHARK_REPEL_DIST) * 0.35
-      ax -= ((wanderingShark.pos.x - head.x) / d) * w
-      ay -= ((wanderingShark.pos.y - head.y) / d) * w
     }
   }
 
@@ -221,48 +166,11 @@ function stepSnake(sn: Snake, W: number, H: number): void {
   }
 }
 
-function stepShark(s: Shark, W: number, H: number): void {
-  s.vx += (Math.random() - 0.5) * 0.08
-  s.vy += (Math.random() - 0.5) * 0.08
-  const spd = Math.sqrt(s.vx * s.vx + s.vy * s.vy)
-  const target = BASE_SPEED * 0.6
-  if (spd > target * 2) { s.vx = (s.vx / spd) * target * 2; s.vy = (s.vy / spd) * target * 2 }
-  if (spd < target * 0.4 && spd > 0) { s.vx = (s.vx / spd) * target * 0.4; s.vy = (s.vy / spd) * target * 0.4 }
-  const m = 40
-  if (s.pos.x < m) s.vx = Math.abs(s.vx)
-  if (s.pos.x > W - m) s.vx = -Math.abs(s.vx)
-  if (s.pos.y < m) s.vy = Math.abs(s.vy)
-  if (s.pos.y > H - m) s.vy = -Math.abs(s.vy)
-  s.pos.x += s.vx
-  s.pos.y += s.vy
-}
 
 function drawFrame(ctx: CanvasRenderingContext2D): void {
   const W = ctx.canvas.width
   const H = ctx.canvas.height
   ctx.clearRect(0, 0, W, H)
-
-  // static food
-  ctx.font = '16px serif'
-  for (const f of staticFoods) {
-    if (!f.active) continue
-    ctx.globalAlpha = 0.7
-    ctx.fillText('🦐', f.pos.x - 8, f.pos.y + 8)
-  }
-
-  // wandering shark
-  if (wanderingShark) {
-    ctx.globalAlpha = 0.85
-    ctx.font = '22px serif'
-    const s = wanderingShark
-    if (s.vx < 0) {
-      ctx.save(); ctx.scale(-1, 1)
-      ctx.fillText('🦈', -s.pos.x - 11, s.pos.y + 11)
-      ctx.restore()
-    } else {
-      ctx.fillText('🦈', s.pos.x - 11, s.pos.y + 11)
-    }
-  }
 
   // pointer indicator (food or shark)
   if (pointer) {
@@ -340,17 +248,7 @@ function tick(): void {
   const W = canvas.width
   const H = canvas.height
 
-  for (const f of staticFoods) {
-    if (!f.active) {
-      if (--f.respawnIn <= 0) {
-        f.pos = { x: rand(60, W - 60), y: rand(60, H - 60) }
-        f.active = true
-      }
-    }
-  }
-
   for (const sn of snakes) stepSnake(sn, W, H)
-  if (wanderingShark) stepShark(wanderingShark, W, H)
   drawFrame(ctx)
   raf = requestAnimationFrame(tick)
 }
@@ -412,8 +310,6 @@ export function startSnakeMode(
 
   const sentenceChars = charPositionsFromLines(lines, font, lineHeight)
   snakes = sentenceChars.slice(0, 20).map((chars, i) => makeSnake(chars, i))
-  staticFoods = Array.from({ length: STATIC_FOOD_COUNT }, () => makeStaticFood(W, H))
-  wanderingShark = makeShark(W, H)
 
   // Pointer tracking on window (canvas is pointer-events:none so page nav still works)
   boundPointerDown = (e: PointerEvent) => {
@@ -456,8 +352,6 @@ export function stopSnakeMode(): void {
   pointerMode = 'food'
 
   snakes = []
-  staticFoods = []
-  wanderingShark = null
 }
 
 export function isSnakeModeActive(): boolean {
