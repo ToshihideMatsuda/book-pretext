@@ -6,6 +6,7 @@ import {
   type LayoutCursor,
   type PreparedTextWithSegments,
 } from '@chenglou/pretext'
+import { startSnakeMode, stopSnakeMode, isSnakeModeActive, recordTap } from './snake-animation'
 
 const DEFAULT_BODY_FONT_SIZE = 18
 const MIN_BODY_FONT_SIZE = 12
@@ -762,6 +763,7 @@ function updatePageCounter(): void {
 }
 
 function renderCurrentBook(): void {
+  stopSnakeMode()
   const book = getCurrentBook()
   ensureBookPagination(book)
   currentPage = clamp(currentPage, 0, Math.max(book.totalPages - 1, 0))
@@ -1399,6 +1401,17 @@ window.addEventListener(
     }
 
     if (Math.abs(deltaX) <= TAP_MAX_MOVEMENT && Math.abs(deltaY) <= TAP_MAX_MOVEMENT) {
+      const tapX = event.changedTouches[0]!.clientX
+      const tapY = event.changedTouches[0]!.clientY
+      if (recordTap(tapX, tapY)) {
+        if (isSnakeModeActive()) {
+          stopSnakeMode()
+        } else {
+          const text = currentPageLayout?.bodyLines.map(l => l.text).join('') ?? ''
+          startSnakeMode(stage, text)
+        }
+        return
+      }
       if (isChromeVisible()) {
         hideChromeImmediately()
       } else {
