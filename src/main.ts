@@ -9,8 +9,6 @@ import {
 import { startSnakeMode, stopSnakeMode, triggerReturn, isSnakeModeActive, togglePointerMode, recordTap, type LineGroup } from './snake-animation'
 
 const DEFAULT_BODY_FONT_SIZE = 18
-const MIN_BODY_FONT_SIZE = 12
-const MAX_BODY_FONT_SIZE = 30
 const BODY_LINE_HEIGHT_RATIO = 30 / 18
 const HEADLINE_FONT_FAMILY = '"Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "HGS明朝E", serif'
 const GUTTER = 48
@@ -32,6 +30,9 @@ type PositionedLine = { x: number; y: number; width: number; text: string }
 type BodyLine = PositionedLine & { end: LayoutCursor; endOffset: number; start: LayoutCursor; startOffset: number }
 type RectObstacle = { x: number; y: number; w: number; h: number }
 type RenderedPage = {
+  authorFont: string
+  authorLineHeight: number
+  authorLines: PositionedLine[]
   bodyFont: string
   bodyLineHeight: number
   bodyLines: BodyLine[]
@@ -48,6 +49,7 @@ type RenderedPage = {
 }
 
 type LayerPool = {
+  authors: HTMLSpanElement[]
   lines: HTMLSpanElement[]
   headlines: HTMLSpanElement[]
   dropCap: HTMLDivElement | null
@@ -214,11 +216,6 @@ let searchState: SearchState | null = null
 let touchStartX = 0
 let touchStartY = 0
 let isSwipeTracking = false
-let isPinching = false
-let pinchStartDistance = 0
-let pinchStartFontSize = bodyFontSize
-let pendingPinchFontSize = bodyFontSize
-let pinchAnchor: LayoutCursor | null = null
 let chromeHideTimer: number | null = null
 let suppressClickUntil = 0
 
@@ -227,7 +224,7 @@ const layerPools = new Map<HTMLElement, LayerPool>()
 function getPool(layer: HTMLElement): LayerPool {
   let pool = layerPools.get(layer)
   if (!pool) {
-    pool = { lines: [], headlines: [], dropCap: null }
+    pool = { authors: [], lines: [], headlines: [], dropCap: null }
     layerPools.set(layer, pool)
   }
   return pool
@@ -246,7 +243,7 @@ function syncPool<T extends HTMLElement>(layer: HTMLElement, pool: T[], count: n
 
 function clearLayer(layer: HTMLElement): void {
   layer.replaceChildren()
-  layerPools.set(layer, { lines: [], headlines: [], dropCap: null })
+  layerPools.set(layer, { authors: [], lines: [], headlines: [], dropCap: null })
 }
 
 function setChromeVisible(visible: boolean): void {
@@ -458,10 +455,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
-function quantizeFontSize(value: number): number {
-  return Math.round(clamp(value, MIN_BODY_FONT_SIZE, MAX_BODY_FONT_SIZE) * 2) / 2
-}
-
 function getBodyFont(): string {
   return `${bodyFontSize}px "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "HGS明朝E", serif`
 }
@@ -511,8 +504,21 @@ function composePageLayout(
   const headlineLineHeight = Math.round(headlineSize * 0.93)
   const headlineFont = `700 ${headlineSize}px ${HEADLINE_FONT_FAMILY}`
   const headlineHeight = headlineLines.length * headlineLineHeight
+  const authorSize = Math.max(bodyFontSize + 4, Math.min(Math.round((headlineSize + bodyFontSize) / 2), isNarrow ? 28 : 42))
+  const authorLineHeight = Math.round(authorSize * 1.05)
+  const authorFont = `500 ${authorSize}px ${HEADLINE_FONT_FAMILY}`
+  const preparedAuthor = prepareWithSegments(book.author, authorFont)
+  const authorLines = layoutWithLines(preparedAuthor, headlineWidth, authorLineHeight).lines.map((line, index) => ({
+    x: 0,
+    y: headlineHeight + (isNarrow ? 8 : 10) + index * authorLineHeight,
+    text: line.text,
+    width: line.width,
+  }))
+  const authorHeight = authorLines.length > 0
+    ? authorLines.length * authorLineHeight + (isNarrow ? 12 : 16)
+    : 0
 
-  const bodyTop = gutter + headlineHeight + (isNarrow ? 14 : 20)
+  const bodyTop = gutter + headlineHeight + authorHeight + (isNarrow ? 14 : 20)
   const bodyHeight = pageHeight - bodyTop - bottomGap
   const columnCount = pageWidth > 1000 ? 3 : pageWidth > 640 ? 2 : 1
   const columnWidth = Math.floor((Math.min(pageWidth, 1500) - gutter * 2 - colGap * (columnCount - 1)) / columnCount)
@@ -549,6 +555,9 @@ function composePageLayout(
   }
 
   return {
+    authorFont,
+    authorLineHeight,
+    authorLines,
     bodyFont,
     bodyLineHeight,
     bodyLines: allLines,
@@ -601,6 +610,21 @@ function paintPageLayout(layer: HTMLElement, page: RenderedPage, book: Book): vo
     el.style.top = `${gutter + line.y}px`
     el.style.font = page.headlineFont
     el.style.lineHeight = `${page.headlineLineHeight}px`
+  }
+
+  syncPool(layer, pool.authors, page.authorLines.length, () => {
+    const el = document.createElement('span')
+    el.className = 'author-line'
+    return el
+  })
+  for (let i = 0; i < page.authorLines.length; i++) {
+    const el = pool.authors[i]!
+    const line = page.authorLines[i]!
+    el.textContent = line.text
+    el.style.left = `${gutter + line.x}px`
+    el.style.top = `${gutter + line.y}px`
+    el.style.font = page.authorFont
+    el.style.lineHeight = `${page.authorLineHeight}px`
   }
 
   syncPool(layer, pool.lines, page.bodyLines.length, () => {
@@ -1168,26 +1192,6 @@ function captureAnchorCursor(clientY: number): LayoutCursor | null {
   return cloneCursor(bestLine.start)
 }
 
-function applyBodyFontSize(nextSize: number, anchor: LayoutCursor | null): void {
-  const normalized = quantizeFontSize(nextSize)
-  if (normalized === bodyFontSize) {
-    return
-  }
-
-  bodyFontSize = normalized
-  refreshAllBooksPreparation()
-  ensureBookPagination(getCurrentBook())
-
-  if (anchor) {
-    currentPage = findPageIndexForCursor(getCurrentBook(), anchor)
-  } else {
-    currentPage = clamp(currentPage, 0, Math.max(getCurrentBook().totalPages - 1, 0))
-  }
-
-  renderCurrentBook()
-  refreshSearchMatches()
-}
-
 function handleViewportChange(): void {
   if (isAnimating) {
     return
@@ -1336,58 +1340,22 @@ window.addEventListener(
       return
     }
 
-    if (event.touches.length === 2) {
-      isPinching = true
+    if (event.touches.length !== 1) {
       isSwipeTracking = false
-      pinchStartDistance = getTouchDistance(event.touches[0]!, event.touches[1]!)
-      pinchStartFontSize = bodyFontSize
-      pendingPinchFontSize = bodyFontSize
-      pinchAnchor = captureAnchorCursor((event.touches[0]!.clientY + event.touches[1]!.clientY) / 2)
       return
     }
 
-    if (event.touches.length === 1 && !isPinching) {
-      isSwipeTracking = true
-      touchStartX = event.touches[0]!.clientX
-      touchStartY = event.touches[0]!.clientY
-    }
+    isSwipeTracking = true
+    touchStartX = event.touches[0]!.clientX
+    touchStartY = event.touches[0]!.clientY
   },
   { passive: true },
-)
-
-window.addEventListener(
-  'touchmove',
-  (event: TouchEvent) => {
-    if (!isPinching || event.touches.length !== 2) {
-      return
-    }
-
-    event.preventDefault()
-    const distance = getTouchDistance(event.touches[0]!, event.touches[1]!)
-    if (pinchStartDistance <= 0) {
-      return
-    }
-    pendingPinchFontSize = quantizeFontSize(pinchStartFontSize * (distance / pinchStartDistance))
-  },
-  { passive: false },
 )
 
 window.addEventListener(
   'touchend',
   (event: TouchEvent) => {
     suppressClickUntil = Date.now() + 500
-
-    if (isPinching) {
-      if (event.touches.length < 2) {
-        const nextSize = pendingPinchFontSize
-        const anchor = pinchAnchor
-        isPinching = false
-        pinchStartDistance = 0
-        pinchAnchor = null
-        applyBodyFontSize(nextSize, anchor)
-      }
-      return
-    }
 
     if (tocOverlay.classList.contains('toc-open') || searchPanel.classList.contains('search-open') || !isSwipeTracking) {
       return
@@ -1417,14 +1385,24 @@ window.addEventListener(
         } else {
           const isNarrow = document.documentElement.clientWidth < NARROW_BREAKPOINT
           const gutter = isNarrow ? NARROW_GUTTER : GUTTER
+          const pool = getPool(frontLayer)
           const bodyGroup: LineGroup = {
-            lines: currentPageLayout?.bodyLines ?? [],
+            lines: (currentPageLayout?.bodyLines ?? []).map((line, index) => ({
+              element: pool.lines[index] ?? undefined,
+              text: line.text,
+              x: line.x,
+              y: line.y,
+            })),
+            color: '#e8e4dc',
             font: currentPageLayout?.bodyFont ?? getBodyFont(),
             lineHeight: currentPageLayout?.bodyLineHeight ?? getBodyLineHeight(),
           }
           const headlineGroup: LineGroup | undefined = currentPageLayout?.headlineLines.length
             ? {
-                lines: currentPageLayout.headlineLines.map(l => ({
+                color: '#fff',
+                letterSpacing: -0.5,
+                lines: currentPageLayout.headlineLines.map((l, index) => ({
+                  element: pool.headlines[index] ?? undefined,
                   x: gutter + l.x,
                   y: gutter + l.y,
                   text: l.text,
@@ -1433,7 +1411,34 @@ window.addEventListener(
                 lineHeight: currentPageLayout.headlineLineHeight,
               }
             : undefined
-          startSnakeMode(stage, bodyGroup, headlineGroup)
+          const authorGroup: LineGroup | undefined = currentPageLayout?.authorLines.length
+            ? {
+                color: 'rgb(255 255 255 / 0.72)',
+                lines: currentPageLayout.authorLines.map((l, index) => ({
+                  element: pool.authors[index] ?? undefined,
+                  x: gutter + l.x,
+                  y: gutter + l.y,
+                  text: l.text,
+                })),
+                font: currentPageLayout.authorFont,
+                lineHeight: currentPageLayout.authorLineHeight,
+              }
+            : undefined
+          const dropCapGroup: LineGroup | undefined = currentPageLayout?.isFirstPage
+            ? {
+                color: '#c4a35a',
+                lines: [{
+                  element: pool.dropCap ?? undefined,
+                  x: currentPageLayout.contentLeft - 2,
+                  y: currentPageLayout.bodyTop - 2,
+                  text: getCurrentBook().dropCapText,
+                }],
+                font: currentPageLayout.dropCapFont,
+                lineHeight: currentPageLayout.dropCapSize,
+                splitMode: 'line',
+              }
+            : undefined
+          startSnakeMode(stage, bodyGroup, headlineGroup, dropCapGroup, authorGroup)
           frontLayer.style.visibility = 'hidden'
         }
         return
@@ -1453,10 +1458,7 @@ window.addEventListener(
 window.addEventListener(
   'touchcancel',
   () => {
-    isPinching = false
     isSwipeTracking = false
-    pinchStartDistance = 0
-    pinchAnchor = null
   },
   { passive: true },
 )
@@ -1571,8 +1573,4 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;')
-}
-
-function getTouchDistance(left: Touch, right: Touch): number {
-  return Math.hypot(left.clientX - right.clientX, left.clientY - right.clientY)
 }

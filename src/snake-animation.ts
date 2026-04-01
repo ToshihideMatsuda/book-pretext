@@ -9,22 +9,35 @@ const POINTER_FOOD_DIST = 250
 const POINTER_SHARK_DIST = 280
 const WANDER = 0.12
 export const DOUBLE_TAP_MS = 320
-const WARMUP_FRAMES = 60
-const STAGGER_FRAMES = 18
+const WARMUP_FRAMES = 20
+const STAGGER_FRAMES = 6
 
 export interface PageLine {
   x: number
   y: number
   text: string
+  element?: HTMLElement
 }
 
 export interface LineGroup {
   lines: PageLine[]
   font: string
   lineHeight: number
+  color?: string
+  letterSpacing?: number
+  splitMode?: 'line' | 'sentence'
 }
 
 interface Pt { x: number; y: number }
+
+interface CharSprite {
+  char: string
+  sourceElement?: HTMLElement
+  sourceOffsetX?: number
+  width: number
+  x: number
+  y: number
+}
 
 interface Seg {
   x: number   // current simulation x
@@ -45,7 +58,6 @@ interface Snake {
 }
 
 let container: HTMLDivElement | null = null
-let toggleBtn: HTMLButtonElement | null = null
 let pointerEl: HTMLDivElement | null = null
 let raf: number | null = null
 let snakes: Snake[] = []
@@ -79,28 +91,135 @@ function dst(a: Pt, b: Pt): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
-// Compute per-character x positions using measureText, y = CSS top of the line
-function charPositionsFromLines(
-  lines: PageLine[],
-  font: string,
-): { char: string; x: number; y: number }[][] {
-  const tmpCtx = document.createElement('canvas').getContext('2d')!
-  tmpCtx.font = font
-  const sentences: { char: string; x: number; y: number }[][] = []
-  let current: { char: string; x: number; y: number }[] = []
+function collectTextNodes(root: HTMLElement): Array<{ end: number; node: Text; start: number }> {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const nodes: Array<{ end: number; node: Text; start: number }> = []
+  let offset = 0
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text
+    const length = node.data.length
+    nodes.push({ end: offset + length, node, start: offset })
+    offset += length
+  }
+  return nodes
+}
 
-  for (const line of lines) {
-    const chars = graphemes(line.text)
-    let cx = line.x
-    for (const char of chars) {
-      current.push({ char, x: cx, y: line.y })
-      cx += tmpCtx.measureText(char).width
-      if (/[。！？…]+/.test(char)) {
-        if (current.length > 1) { sentences.push(current); current = [] }
-      }
+function resolveTextOffset(
+  nodes: Array<{ end: number; node: Text; start: number }>,
+  offset: number,
+): { node: Text; offset: number } | null {
+  for (const entry of nodes) {
+    if (offset >= entry.start && offset <= entry.end) {
+      return { node: entry.node, offset: offset - entry.start }
     }
   }
-  if (current.length > 1) sentences.push(current)
+  const last = nodes.at(-1)
+  return last ? { node: last.node, offset: last.node.data.length } : null
+}
+
+function cloneLineFragment(source: HTMLElement, offsetX: number): HTMLElement {
+  const clone = source.cloneNode(true) as HTMLElement
+  clone.style.position = 'absolute'
+  clone.style.left = `${-offsetX}px`
+  clone.style.top = '0'
+  clone.style.margin = '0'
+  clone.style.transform = ''
+  clone.style.pointerEvents = 'none'
+  clone.style.userSelect = 'none'
+  clone.style.whiteSpace = 'pre'
+  return clone
+}
+
+function positionsFromElement(stage: HTMLElement, line: PageLine): CharSprite[] | null {
+  if (!line.element) {
+    return null
+  }
+
+  const nodes = collectTextNodes(line.element)
+  if (nodes.length === 0) {
+    return null
+  }
+
+  const chars = graphemes(line.text)
+  const stageRect = stage.getBoundingClientRect()
+  const lineRect = line.element.getBoundingClientRect()
+  const lineX = lineRect.left - stageRect.left
+  const lineY = lineRect.top - stageRect.top
+  const sprites: CharSprite[] = []
+  let codeUnitOffset = 0
+
+  for (const char of chars) {
+    const start = resolveTextOffset(nodes, codeUnitOffset)
+    const end = resolveTextOffset(nodes, codeUnitOffset + char.length)
+    if (!start || !end) {
+      return null
+    }
+
+    const range = document.createRange()
+    range.setStart(start.node, start.offset)
+    range.setEnd(end.node, end.offset)
+    const rect = range.getBoundingClientRect()
+    if (!rect.width || !rect.height) {
+      return null
+    }
+
+    const x = rect.left - stageRect.left
+    sprites.push({
+      char,
+      sourceElement: line.element,
+      sourceOffsetX: x - lineX,
+      width: rect.width,
+      x,
+      y: lineY,
+    })
+    codeUnitOffset += char.length
+  }
+
+  return sprites
+}
+
+// Compute per-character x positions using measureText, y = CSS top of the line
+function charPositionsFromLines(
+  stage: HTMLElement,
+  lines: PageLine[],
+  font: string,
+  letterSpacing = 0,
+  splitMode: 'line' | 'sentence' = 'sentence',
+): CharSprite[][] {
+  const tmpCtx = document.createElement('canvas').getContext('2d')!
+  tmpCtx.font = font
+  const sentences: CharSprite[][] = []
+  let current: CharSprite[] = []
+
+  for (const line of lines) {
+    const exactChars = positionsFromElement(stage, line)
+    const chars = exactChars ?? graphemes(line.text).map(char => ({ char }))
+    let rendered = ''
+    let advance = 0
+    for (let index = 0; index < chars.length; index++) {
+      const char = chars[index]!
+      if (exactChars) {
+        current.push(char)
+      } else {
+        current.push({
+          char: char.char,
+          width: tmpCtx.measureText(char.char).width,
+          x: line.x + advance,
+          y: line.y,
+        })
+      }
+      rendered += char.char
+      advance = tmpCtx.measureText(rendered).width + letterSpacing * (index + 1)
+      if (splitMode === 'sentence' && /[。！？…]+/.test(char.char)) {
+        if (current.length > 0) { sentences.push(current); current = [] }
+      }
+    }
+    if (splitMode === 'line' && current.length > 0) {
+      sentences.push(current)
+      current = []
+    }
+  }
+  if (current.length > 0) sentences.push(current)
   return sentences
 }
 
@@ -110,10 +229,11 @@ function fontSizeFromFont(font: string): number {
 }
 
 function makeSnake(
-  charPos: { char: string; x: number; y: number }[],
+  charPos: CharSprite[],
   index: number,
   font: string,
   lineHeight: number,
+  color: string,
   parent: HTMLDivElement,
 ): Snake {
   const angle = Math.random() * Math.PI * 2
@@ -122,17 +242,26 @@ function makeSnake(
 
   const segs: Seg[] = charPos.map(cp => {
     const el = document.createElement('span')
-    el.textContent = cp.char
     el.style.position = 'absolute'
     el.style.left = `${cp.x}px`
     el.style.top = `${cp.y}px`
-    el.style.font = font
-    el.style.lineHeight = `${lineHeight}px`
-    el.style.color = '#e8e4dc'
+    el.style.width = `${Math.max(cp.width, 1)}px`
+    el.style.height = `${lineHeight}px`
+    el.style.overflow = 'hidden'
     el.style.whiteSpace = 'pre'
     el.style.willChange = 'transform, opacity'
     el.style.pointerEvents = 'none'
     el.style.userSelect = 'none'
+
+    if (cp.sourceElement) {
+      el.appendChild(cloneLineFragment(cp.sourceElement, cp.sourceOffsetX ?? 0))
+    } else {
+      el.textContent = cp.char
+      el.style.font = font
+      el.style.lineHeight = `${lineHeight}px`
+      el.style.color = color
+    }
+
     parent.appendChild(el)
     return { x: cp.x, y: cp.y, ox: cp.x, oy: cp.y, el }
   })
@@ -210,10 +339,11 @@ function updateDOM(now: number): void {
     // First frame after warmup: update head style once
     if (!frozen && !sn.swimming) {
       sn.swimming = true
-      const headEl = sn.segs[0]?.el
+      const headEl = sn.segs[0]?.el.firstElementChild instanceof HTMLElement
+        ? sn.segs[0]!.el.firstElementChild
+        : sn.segs[0]?.el
       if (headEl) {
-        headEl.style.fontWeight = 'bold'
-        headEl.style.color = '#f0ece4'
+        headEl.style.textShadow = '0 0 10px rgb(255 255 255 / 0.18)'
       }
     }
 
@@ -295,42 +425,6 @@ function tick(now: number): void {
   raf = requestAnimationFrame(tick)
 }
 
-function createToggleButton(parent: HTMLElement): HTMLButtonElement {
-  const btn = document.createElement('button')
-  btn.textContent = '🦐 餌モード'
-  btn.style.cssText = `
-    position: absolute;
-    bottom: 90px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0,30,60,0.80);
-    color: #7ad;
-    border: 1px solid rgba(100,200,255,0.35);
-    border-radius: 24px;
-    padding: 10px 28px;
-    font-size: 15px;
-    cursor: pointer;
-    backdrop-filter: blur(6px);
-    user-select: none;
-    z-index: 200;
-    touch-action: manipulation;
-    transition: color 0.2s, border-color 0.2s;
-    pointer-events: auto;
-    white-space: nowrap;
-  `
-  btn.addEventListener('click', e => {
-    e.stopPropagation()
-    pointerMode = pointerMode === 'food' ? 'shark' : 'food'
-    btn.textContent = pointerMode === 'food' ? '🦐 餌モード' : '🦈 鮫モード'
-    btn.style.color = pointerMode === 'food' ? '#7ad' : '#f88'
-    btn.style.borderColor = pointerMode === 'food'
-      ? 'rgba(100,200,255,0.35)'
-      : 'rgba(255,120,120,0.4)'
-  })
-  parent.appendChild(btn)
-  return btn
-}
-
 function createPointerEl(parent: HTMLElement): HTMLDivElement {
   const el = document.createElement('div')
   el.style.cssText = `
@@ -350,6 +444,8 @@ export function startSnakeMode(
   stage: HTMLElement,
   bodyGroup: LineGroup,
   headlineGroup?: LineGroup,
+  dropCapGroup?: LineGroup,
+  authorGroup?: LineGroup,
 ): void {
   stopSnakeMode()
 
@@ -357,22 +453,26 @@ export function startSnakeMode(
   container.style.cssText = 'position:absolute;inset:0;z-index:6;overflow:hidden;pointer-events:none;'
   stage.appendChild(container)
 
-  // Button and pointer indicator go directly on stage (not inside pointer-events:none container)
-  toggleBtn = createToggleButton(stage)
   pointerEl = createPointerEl(stage)
 
   // Headline snakes first (so they peel off before body sentences)
-  const headlineSentences = headlineGroup
-    ? charPositionsFromLines(headlineGroup.lines, headlineGroup.font).map(
-        chars => ({ chars, font: headlineGroup.font, lineHeight: headlineGroup.lineHeight }),
-      )
-    : []
-  const bodySentences = charPositionsFromLines(bodyGroup.lines, bodyGroup.font).map(
-    chars => ({ chars, font: bodyGroup.font, lineHeight: bodyGroup.lineHeight }),
+  const groups = [dropCapGroup, headlineGroup, authorGroup, bodyGroup].filter(Boolean) as LineGroup[]
+  const all = groups.flatMap(group =>
+    charPositionsFromLines(
+      stage,
+      group.lines,
+      group.font,
+      group.letterSpacing ?? 0,
+      group.splitMode ?? 'sentence',
+    ).map(chars => ({
+      chars,
+      color: group.color ?? '#e8e4dc',
+      font: group.font,
+      lineHeight: group.lineHeight,
+    })),
   )
-  const all = [...headlineSentences, ...bodySentences].slice(0, 25)
   snakes = all.map(({ chars, font, lineHeight }, i) =>
-    makeSnake(chars, i, font, lineHeight, container!),
+    makeSnake(chars, i, font, lineHeight, all[i]!.color, container!),
   )
 
   // Pointer tracking (window-level so canvas/div pointer-events:none is unaffected)
@@ -403,16 +503,14 @@ export function triggerReturn(onComplete: () => void): void {
     sn.returning = true
     sn.warmup = 0  // unfreeze any still-frozen snakes so they can return
   }
-  // Hide pointer indicator and button immediately
+  // Hide pointer indicator immediately
   if (pointerEl) pointerEl.style.display = 'none'
-  if (toggleBtn) toggleBtn.style.display = 'none'
 }
 
 export function stopSnakeMode(): void {
   returnCallback = null
   if (raf !== null) { cancelAnimationFrame(raf); raf = null }
   container?.remove(); container = null
-  toggleBtn?.remove(); toggleBtn = null
   pointerEl?.remove(); pointerEl = null
 
   if (boundPointerDown) { window.removeEventListener('pointerdown', boundPointerDown); boundPointerDown = null }
@@ -431,12 +529,6 @@ export function isSnakeModeActive(): boolean {
 
 export function togglePointerMode(): void {
   pointerMode = pointerMode === 'food' ? 'shark' : 'food'
-  if (!toggleBtn) return
-  toggleBtn.textContent = pointerMode === 'food' ? '🦐 餌モード' : '🦈 鮫モード'
-  toggleBtn.style.color = pointerMode === 'food' ? '#7ad' : '#f88'
-  toggleBtn.style.borderColor = pointerMode === 'food'
-    ? 'rgba(100,200,255,0.35)'
-    : 'rgba(255,120,120,0.4)'
 }
 
 export function recordTap(x: number, y: number): boolean {
